@@ -220,7 +220,7 @@ class AttrDict(dict):
         self.__dict__ = self
 
 
-def simple_hg_config(hg_config):
+def simple_hf_config(hg_config):
     config = hg_config.to_dict()
     final_config = {}
     for k, v in config.items():
