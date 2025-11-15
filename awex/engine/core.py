@@ -70,3 +70,7 @@ class TrainingEngine(Engine):
     def write_weights(self, **kwargs):
         """Write weights for training engine."""
         pass
+
+    @abstractmethod
+    def release_grad_memory(self, empty_cache=True):
+        pass
