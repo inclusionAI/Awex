@@ -1,4 +1,4 @@
-import logging
+from awex from awex import logging
 from typing import List
 
 from awex.reader.weights_reader import WorkerWeightsReader

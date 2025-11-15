@@ -1,4 +1,4 @@
-import logging
+from awex import logging
 from typing import Callable, Dict, List, Tuple, Union, Iterable
 
 import torch

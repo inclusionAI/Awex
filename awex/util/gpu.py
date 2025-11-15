@@ -1,6 +1,6 @@
 import subprocess
 
-import logging
+from awex import logging
 
 import torch
 

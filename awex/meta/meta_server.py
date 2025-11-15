@@ -1,4 +1,4 @@
-import logging
+from awex import logging
 import asyncio
 import threading
 import pickle
@@ -16,7 +16,6 @@ import signal
 import random
 
 from awex.util.common import (
-    configure_logging,
     to_binary,
     from_binary,
     get_ip_address,
@@ -329,8 +328,6 @@ def run_meta_server_process(host: str, port: int, result_queue):
     This function is designed to be called by multiprocessing.Process
     """
     try:
-        # Configure logging for the subprocess
-        configure_logging(level=logging.INFO, force=True)
         try:
             import uvloop
 
@@ -734,10 +731,7 @@ class MetaServerClient:
 
 
 if __name__ == "__main__":
-    # Example usage
-    configure_logging(level=logging.INFO)
     # Start the meta server
-
     address, port = start_meta_server("", 0)
 
     try:

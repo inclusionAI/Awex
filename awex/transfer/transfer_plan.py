@@ -18,7 +18,7 @@
 import os
 import time
 import torch
-import logging
+from awex import logging
 from typing import List, Dict, Tuple, Any
 from dataclasses import dataclass
 from awex.meta.meta_resolver import (

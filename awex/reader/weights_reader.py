@@ -1,4 +1,4 @@
-import logging
+from awex import logging
 import os
 import pickle
 import threading

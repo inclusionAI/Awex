@@ -7,9 +7,7 @@ from awex.util.tensor_util import check_and_log_nan_values
 from awex.util.tensor_util import compare_and_log_tensor_differences
 from awex.util.process_group import setup_batch_isend_irecv
 from awex.util.process_group import init_weights_update_group
-from awex.util.common import get_free_port, configure_logging
-
-configure_logging()
+from awex.util.common import get_free_port
 
 mp.set_start_method("spawn", force=True)
 

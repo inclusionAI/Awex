@@ -1,5 +1,5 @@
 from enum import Enum
-import logging
+from awex import logging
 from typing import Callable
 
 from awex.sharding.rank_info import RankInfo

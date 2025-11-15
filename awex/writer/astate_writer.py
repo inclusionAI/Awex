@@ -1,4 +1,4 @@
-import logging
+from awex import logging
 from typing import List
 
 from awex.writer.weights_writer import WeightsExchangeShardingWriter

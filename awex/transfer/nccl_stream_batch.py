@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-import logging
+from awex import logging
 import math
 import os
 import time
