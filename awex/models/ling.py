@@ -1,6 +1,6 @@
 from typing import Dict, Tuple, List
 
-import logging
+from awex import logging
 import torch
 from transformers import PretrainedConfig
 

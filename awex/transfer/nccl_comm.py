@@ -1,4 +1,4 @@
-import logging
+from awex import logging
 import math
 import os
 import subprocess

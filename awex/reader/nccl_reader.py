@@ -1,6 +1,5 @@
-import os
 import gc
-import logging
+from awex import logging
 import os
 import time
 

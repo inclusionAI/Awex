@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from collections import defaultdict
-import logging
+from awex import logging
 from typing import Any, Dict, List, Tuple
 
 from awex.meta.weight_meta import ParameterMeta, ParameterShardMeta, ParameterReplicaMeta

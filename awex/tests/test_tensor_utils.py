@@ -5,9 +5,6 @@ from awex.util.tensor_util import (
     group_tensors_by_shape_and_dtype,
     reconstruct_tensors_from_groups,
 )
-from awex.util.common import configure_logging
-
-configure_logging()
 
 mp.set_start_method("spawn", force=True)
 

@@ -1,4 +1,4 @@
-import logging
+from awex import logging
 import torch
 
 logger = logging.getLogger(__name__)
