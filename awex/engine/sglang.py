@@ -107,4 +107,7 @@ class SGlangEngine(InferenceEngine):
     def execute_task_in_model_worker(self, fn, **kwargs):
         if not self._initialized:
             raise RuntimeError("Engine not initialized. Call `initialize` first.")
+        if self.node_rank != 0:
+            raise RuntimeError(f"Non-zero rank node {self.rank_coordinate} is not allowed to "
+                               f"execute task in model workers")
         return self._sgl_engine.execute_task_in_model_worker(fn, **kwargs)
