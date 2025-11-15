@@ -27,6 +27,8 @@ class InferenceConfig:
     enable_memory_saver: Optional[bool] = None
     moe_dense_tp_size: Optional[int] = None
     n_share_experts_fusion: Optional[int] = None
+    nnodes: Optional[int] = None
+    node_rank: Optional[int] = None
 
     local_rank: Optional[int] = None
     # Asystem special config
