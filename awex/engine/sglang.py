@@ -118,7 +118,7 @@ class SGlangEngine(InferenceEngine):
             logger.info(f"GPU status after release:\n{get_gpu_status()}")
 
     def resume_memory_occupation(self, tags: Optional[List[str]] = None) -> None:
-        """Resume memory occupation for the backend.
+        """Resume memory occupation for the engine.
         tags: kv_cache, weights, default is both
         """
         tags = tags or ["kv_cache", "weights"]

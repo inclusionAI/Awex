@@ -36,28 +36,28 @@ from awex.models.registry import get_infer_weights_converter
 class InferParamMetaResolver(ParamMetaResolver):
     def __init__(
         self,
-        inference_backend,
+        inference_engine,
         convert_params=False,
         num_engines=1,
         engine_rank=0,
     ):
         """
         Args:
-            inference_backend: The inference backend object that can execute tasks in model workers.
+            inference_engine: The inference engine object that can execute tasks in model workers.
             convert_params: Whether to convert the parameters to the Hugging Face format.
         """
-        super().__init__(inference_backend.hf_config)
-        self._inference_backend = inference_backend
-        self.infer_engine_config = inference_backend.engine.config
-        self.engine_name = inference_backend.engine_name
+        super().__init__(inference_engine.hf_config)
+        self._inference_engine = inference_engine
+        self.infer_engine_config = inference_engine.engine.config
+        self.engine_name = inference_engine.engine_name
         self.convert_params = convert_params
         self.num_engines = num_engines
         self.engine_rank = engine_rank
 
         suffix = f"{engine_rank}_{os.getpid()}_{datetime.now().strftime('%Y_%m_%d_%H_%M_%S')}.json"
-        if self._inference_backend.config.enable_debug_mode:
+        if self._inference_engine.config.enable_debug_mode:
             non_converted_params_raw_meta = (
-                inference_backend.execute_task_in_model_worker(
+                inference_engine.execute_task_in_model_worker(
                     self._get_model_param_info,
                     engine_name=self.engine_name,
                     infer_engine_config=self.infer_engine_config,
@@ -72,12 +72,12 @@ class InferParamMetaResolver(ParamMetaResolver):
             logger.info(
                 f"Inference rank {engine_rank}, non_converted_params_raw_meta: {abs_filename}"
             )
-        self._params_raw_meta = inference_backend.execute_task_in_model_worker(
+        self._params_raw_meta = inference_engine.execute_task_in_model_worker(
             self._get_model_param_info,
             engine_rank=engine_rank,
             convert_params=self.convert_params,
         )
-        if self._inference_backend.config.enable_debug_mode:
+        if self._inference_engine.config.enable_debug_mode:
             filename = f"infer_params_raw_meta_{suffix}"
             abs_filename = os.path.abspath(filename)
             with open(abs_filename, "w") as f:
@@ -101,7 +101,7 @@ class InferParamMetaResolver(ParamMetaResolver):
             self.rank0_info,
         )
         self._params_meta = self._build_params_meta()
-        if self._inference_backend.config.enable_debug_mode:
+        if self._inference_engine.config.enable_debug_mode:
             filename = f"infer_params_meta_{suffix}"
             abs_filename = os.path.abspath(filename)
             with open(abs_filename, "w") as f:

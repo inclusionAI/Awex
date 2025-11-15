@@ -49,10 +49,10 @@ logger = logging.getLogger(__name__)
 
 
 class WeightExchangeReader(ABC):
-    def __init__(self, inference_backend):
-        self.inference_backend = inference_backend
-        self.enable_colocate_mode = inference_backend.enable_colocate_mode
-        self.infer_config = inference_backend.config
+    def __init__(self, inference_engine):
+        self.inference_engine = inference_engine
+        self.enable_colocate_mode = inference_engine.enable_colocate_mode
+        self.infer_config = inference_engine.config
         self.weights_comm_nccl_group_size = (
             self.infer_config.weights_comm_nccl_group_size
         )
@@ -66,13 +66,13 @@ class WeightExchangeReader(ABC):
 
 
 class FileWeightExchangeReader(WeightExchangeReader):
-    def __init__(self, inference_backend):
-        super().__init__(inference_backend)
+    def __init__(self, inference_engine):
+        super().__init__(inference_engine)
 
     def update_weights(self, step_id, **kwargs):
         if self.enable_colocate_mode:
-            self.inference_backend.resume_memory_occupation()
-        self.inference_backend.update_weights_from_disk(
+            self.inference_engine.resume_memory_occupation()
+        self.inference_engine.update_weights_from_disk(
             kwargs["path"], kwargs.get("load_format")
         )
 
@@ -80,37 +80,37 @@ class FileWeightExchangeReader(WeightExchangeReader):
 class WeightsExchangeShardingReader(WeightExchangeReader):
     parameters_meta: List[ParameterMeta]
 
-    def __init__(self, meta_resolver: InferParamMetaResolver, inference_backend):
-        super().__init__(inference_backend)
-        self.infer_engine_config = self.inference_backend.infer_engine_config
+    def __init__(self, meta_resolver: InferParamMetaResolver, inference_engine):
+        super().__init__(inference_engine)
+        self.infer_engine_config = self.inference_engine.infer_engine_config
         self.meta_resolver = meta_resolver
         self.parameters_meta = []
-        self.hf_config = inference_backend.hf_config
+        self.hf_config = inference_engine.hf_config
         self.model_arch_name = meta_resolver.get_model_arch_name()
-        self.meta_server_addr = inference_backend.meta_server_addr
+        self.meta_server_addr = inference_engine.meta_server_addr
         logger.info(f"Meta server address: {self.meta_server_addr}")
         self.meta_server_client = MetaServerClient(*self.meta_server_addr.split(":"))
-        self.num_engines = self.inference_backend.config.num_engines
+        self.num_engines = self.inference_engine.config.num_engines
         logger.info("Put number of inference engines to meta server")
-        self.engine_rank = self.inference_backend.engine_rank
-        self.tp_size = self.inference_backend.config.tp_size
-        self.pp_size = self.inference_backend.config.pp_size
+        self.engine_rank = self.inference_engine.engine_rank
+        self.tp_size = self.inference_engine.config.tp_size
+        self.pp_size = self.inference_engine.config.pp_size
         self.infer_world_size = self.num_engines * self.tp_size * self.pp_size
         self.validated_steps = 0
         self.start_step = -1
         self.weights_validation_steps = (
-            self.inference_backend.config.weights_validation_steps
+            self.inference_engine.config.weights_validation_steps
         )
         self.validate_weights_every_n_steps = (
-            self.inference_backend.config.validate_weights_every_n_steps
+            self.inference_engine.config.validate_weights_every_n_steps
         )
         self.dump_weights_list_for_validation = (
-            self.inference_backend.config.dump_weights_list_for_validation
+            self.inference_engine.config.dump_weights_list_for_validation
         )
         self.dump_weights_dir_for_validation = (
-            self.inference_backend.config.dump_weights_dir_for_validation or os.getcwd()
+            self.inference_engine.config.dump_weights_dir_for_validation or os.getcwd()
         )
-        self.ipc_backend = self.inference_backend.config.weights_exchange_ipc_backend
+        self.ipc_backend = self.inference_engine.config.weights_exchange_ipc_backend
         self.timeout = 10000
         self.lock = threading.Lock()
         self.initialized = False
@@ -123,7 +123,7 @@ class WeightsExchangeShardingReader(WeightExchangeReader):
         self.meta_server_client.put_object("num_infer_engines", self.num_engines)
         if self.enable_colocate_mode:
             logger.info("Start to release memory after inference engine initialized")
-            self.inference_backend.release_memory_occupation()
+            self.inference_engine.release_memory_occupation()
             logger.info("Finished releasing memory after inference engine initialized")
         self.meta_server_client.add_object_to_set(
             "num_inited_inference_engines", self.engine_rank
@@ -162,13 +162,13 @@ class WeightsExchangeShardingReader(WeightExchangeReader):
         check_train_infer_params_meta(
             self.training_params_meta,
             self.parameters_meta,
-            raise_exception=not self.inference_backend.enable_debug_mode,
+            raise_exception=not self.inference_engine.enable_debug_mode,
         )
         logger.info("Start to send parameters meta to tp workers")
         infer_parameters_meta_bytes = pickle.dumps(self.parameters_meta)
         train_parameters_meta_bytes = pickle.dumps(self.training_params_meta)
         infer_conf_bytes = pickle.dumps(self.infer_conf)
-        self.inference_backend.execute_task_in_model_worker(
+        self.inference_engine.execute_task_in_model_worker(
             self._init_in_tp_worker,
             infer_conf_bytes=infer_conf_bytes,
             parameters_meta_bytes=infer_parameters_meta_bytes,
@@ -176,10 +176,10 @@ class WeightsExchangeShardingReader(WeightExchangeReader):
             engine_rank=self.engine_rank,
             num_engines=self.num_engines,
             meta_server_addr=self.meta_server_addr,
-            weights_comm_backend=self.inference_backend.weights_exchange_comm_backend,
-            enable_debug_mode=self.inference_backend.enable_debug_mode,
-            debug_mode_config=self.inference_backend.config.debug_mode_config,
-            disable_pipeline=self.inference_backend.config.disable_weights_exchange_pipeline,
+            weights_comm_backend=self.inference_engine.weights_exchange_comm_backend,
+            enable_debug_mode=self.inference_engine.enable_debug_mode,
+            debug_mode_config=self.inference_engine.config.debug_mode_config,
+            disable_pipeline=self.inference_engine.config.disable_weights_exchange_pipeline,
             enable_colocate_mode=self.enable_colocate_mode,
             ipc_backend=self.ipc_backend,
             weights_comm_nccl_group_size=self.weights_comm_nccl_group_size,
@@ -254,10 +254,10 @@ class WeightsExchangeShardingReader(WeightExchangeReader):
                 f"Start to update weights for step {step_id} for engine rank {self.engine_rank}"
             )
             if self.enable_colocate_mode:
-                self.inference_backend.release_memory_occupation()
+                self.inference_engine.release_memory_occupation()
                 self._pre_update_weights(step_id=step_id)
             # TODO(mubai) EPLB: needs to rebuild weights meta if experts rebalance.
-            self.inference_backend.execute_task_in_model_worker(
+            self.inference_engine.execute_task_in_model_worker(
                 self._update_parameters_in_tp_worker, step_id=step_id
             )
             duration = time.time() - start_time
@@ -284,7 +284,7 @@ class WeightsExchangeShardingReader(WeightExchangeReader):
         logger.info(
             "All train ranks have offloaded optimizer states, start to resume weights memory occupation"
         )
-        self.inference_backend.resume_memory_occupation("weights")
+        self.inference_engine.resume_memory_occupation("weights")
         logger.info("Finished resuming weights memory occupation")
 
     def _resume_kvcache_memory_occupation(self):
@@ -292,7 +292,7 @@ class WeightsExchangeShardingReader(WeightExchangeReader):
         self.meta_server_client.add_object_to_set(
             "finished_weights_update_engines", self.engine_rank
         )
-        self.inference_backend.resume_memory_occupation("kv_cache")
+        self.inference_engine.resume_memory_occupation("kv_cache")
         logger.info(
             f"Finished resuming kvcache memory occupation for engine rank {self.engine_rank}"
         )
@@ -323,13 +323,13 @@ class WeightsExchangeShardingReader(WeightExchangeReader):
         )
         if self.enable_colocate_mode:
             self._resume_weights_memory_occupation()
-        self.inference_backend.update_weights_from_disk(
+        self.inference_engine.update_weights_from_disk(
             model_path, kwargs.get("load_format")
         )
         logger.info(
             f"Finished updating weights from disk for step {step_id}, model_path: {model_path}"
         )
-        self.weights_meta = self.inference_backend.execute_task_in_model_worker(
+        self.weights_meta = self.inference_engine.execute_task_in_model_worker(
             self._pre_validate_weights_on_tp_worker,
             step_id=step_id,
         )
@@ -363,7 +363,7 @@ class WeightsExchangeShardingReader(WeightExchangeReader):
             f"All inference engine instances has read weights for step {step_id} from {model_path}"
         )
         if self.enable_colocate_mode:
-            self.inference_backend.release_memory_occupation()
+            self.inference_engine.release_memory_occupation()
 
     @classmethod
     def _pre_validate_weights_on_tp_worker(cls, step_id, **kwargs):
@@ -401,7 +401,7 @@ class WeightsExchangeShardingReader(WeightExchangeReader):
             return
         self.validated_steps += 1
         logger.info(f"Start to validate weights for step {step_id}")
-        verify_results = self.inference_backend.execute_task_in_model_worker(
+        verify_results = self.inference_engine.execute_task_in_model_worker(
             self._verify_weights_on_tp_worker,
             step_id=step_id,
             dump_weights_list_for_validation=dump_weights_list_for_validation,
@@ -505,7 +505,7 @@ class WeightsExchangeShardingReader(WeightExchangeReader):
     def _pre_update_weights(self, step_id, **kwargs):
         if not self.enable_colocate_mode:
             return
-        self.inference_backend.execute_task_in_model_worker(
+        self.inference_engine.execute_task_in_model_worker(
             self._pre_update_weights_in_tp_worker, step_id=step_id
         )
         self.meta_server_client.wait_set_until_size(
@@ -513,7 +513,7 @@ class WeightsExchangeShardingReader(WeightExchangeReader):
             self.training_world_size,
             timeout=self.timeout,
         )
-        self.inference_backend.resume_memory_occupation("weights")
+        self.inference_engine.resume_memory_occupation("weights")
         logger.info(
             f"Finished pre-updating weights for step {step_id} in colocate mode on engine rank {self.engine_rank}"
         )
@@ -692,13 +692,13 @@ class WorkerWeightsReader:
         pass
 
 
-def get_weights_exchange_reader(inference_backend) -> WeightExchangeReader:
-    if inference_backend.weights_exchange_comm_backend == "file":
-        return FileWeightExchangeReader(inference_backend)
+def get_weights_exchange_reader(inference_engine) -> WeightExchangeReader:
+    if inference_engine.weights_exchange_comm_backend == "file":
+        return FileWeightExchangeReader(inference_engine)
     meta_resolver = InferParamMetaResolver(
-        inference_backend,
-        num_engines=inference_backend.num_engines,
-        engine_rank=inference_backend.engine_rank,
+        inference_engine,
+        num_engines=inference_engine.num_engines,
+        engine_rank=inference_engine.engine_rank,
         convert_params=True,
     )
-    return WeightsExchangeShardingReader(meta_resolver, inference_backend)
+    return WeightsExchangeShardingReader(meta_resolver, inference_engine)

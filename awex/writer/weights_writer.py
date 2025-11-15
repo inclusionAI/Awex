@@ -33,10 +33,10 @@ logger = logging.getLogger(__name__)
 
 
 class WeightExchangeWriter(ABC):
-    def __init__(self, train_backend):
-        self.train_backend = train_backend
-        self.enable_debug_mode = train_backend.enable_debug_mode
-        self.enable_colocate_mode = train_backend.enable_colocate_mode
+    def __init__(self, train_engine):
+        self.train_engine = train_engine
+        self.enable_debug_mode = train_engine.enable_debug_mode
+        self.enable_colocate_mode = train_engine.enable_colocate_mode
 
     def initialize(self, **kwargs):
         pass
@@ -47,31 +47,31 @@ class WeightExchangeWriter(ABC):
 
 
 class FileWeightExchangeWriter(WeightExchangeWriter):
-    def __init__(self, train_backend):
-        super().__init__(train_backend)
+    def __init__(self, train_engine):
+        super().__init__(train_engine)
 
     def write_weights(self, **kwargs):
         if self.enable_colocate_mode:
-            self.train_backend.resume_memory_occupation(tags=["weights"])
-        self.train_backend.save_hf_checkpoint(kwargs["path"])
+            self.train_engine.resume_memory_occupation(tags=["weights"])
+        self.train_engine.save_hf_checkpoint(kwargs["path"])
         if self.enable_colocate_mode:
-            self.train_backend.release_memory_occupation(tags=["weights"])
+            self.train_engine.release_memory_occupation(tags=["weights"])
 
 
 class WeightsExchangeShardingWriter(WeightExchangeWriter):
-    def __init__(self, train_backend):
-        super().__init__(train_backend)
-        self.meta_server_addr = train_backend.meta_server_addr
+    def __init__(self, train_engine):
+        super().__init__(train_engine)
+        self.meta_server_addr = train_engine.meta_server_addr
         logger.info(f"Meta server address: {self.meta_server_addr}")
         self.meta_server_client = MetaServerClient(*self.meta_server_addr.split(":"))
         self.infer_conf = None
         self.infer_engine_config = None
-        self.model = self.train_backend.model_engine
-        self.hf_config = self.train_backend.hf_config
+        self.model = self.train_engine.model_engine
+        self.hf_config = self.train_engine.hf_config
         self.model_arch_name = self.hf_config.architectures[0]
         self.validated_steps = 0
         self.start_step = -1
-        self.asystem_train_config = self.train_backend.asystem_train_config
+        self.asystem_train_config = self.train_engine.asystem_train_config
         self.weights_validation_steps = self.asystem_train_config.get(
             "weights_validation_steps", 0
         )
@@ -99,7 +99,7 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
         self.timeout = 10000
         self.initialized = False
         self.num_infer_engines = None
-        self.engine_name = train_backend.engine_name
+        self.engine_name = train_engine.engine_name
 
     def initialize(self, **kwargs):
         pass
@@ -123,7 +123,7 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
             f"Writer transfer rank: {self.transfer_rank}, transfer world size: {self.transfer_world_size}"
         )
         self.parameter_meta_resolver = McoreParamMetaResolver(
-            self.train_backend, self.train_backend.hf_config, self.infer_conf
+            self.train_engine, self.train_engine.hf_config, self.infer_conf
         )
         self.parameters_meta = self.parameter_meta_resolver.get_parameters_meta()
         logger.info(
@@ -176,7 +176,7 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
             raise_exception=not self.enable_debug_mode,
         )
         self.weight_converter = get_train_weights_converter(
-            self.train_backend.engine_name
+            self.train_engine.engine_name
         )(self.model_arch_name, self.hf_config, self.rank_info, self.infer_conf)
         logger.info("Start to get number of inference engines from meta server")
         self.num_infer_engines = self.meta_server_client.get_object(
@@ -223,7 +223,7 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
                 self._validate_weights(step_id, **kwargs)
                 start_time = time.time()
                 if self.enable_colocate_mode:
-                    self.train_backend.resume_memory_occupation(tags=["weights"])
+                    self.train_engine.resume_memory_occupation(tags=["weights"])
                     self._write_weights_in_colocate_mode(step_id, **kwargs)
                 else:
                     self._write_weights(step_id, **kwargs)
@@ -252,8 +252,8 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
             logger.info(
                 "All inference engines have been initialized, start to resume weights memory occupation"
             )
-        self.train_backend.release_memory_occupation(tags=["optimizer"])
-        self.train_backend.resume_memory_occupation(tags=["weights"])
+        self.train_engine.release_memory_occupation(tags=["optimizer"])
+        self.train_engine.resume_memory_occupation(tags=["weights"])
         dist.barrier()
         if dist.get_rank() == 0:
             self.meta_server_client.add_object_to_set(
@@ -316,7 +316,7 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
         gc.collect()
         logger.info(f"GPU status after write weights:\n{get_gpu_status()}")
         if self.enable_colocate_mode:
-            self.train_backend.release_memory_occupation("weights")
+            self.train_engine.release_memory_occupation("weights")
             self.meta_server_client.add_object_to_set(
                 "all_training_offloaded_weights", self.transfer_rank
             )
@@ -372,7 +372,7 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
                 logger.info(
                     f"Parameter {name} with shape {parameter.shape}: {parameter}"
                 )
-        self.train_backend.save_hf_checkpoint(model_path)
+        self.train_engine.save_hf_checkpoint(model_path)
         dist.barrier()
         logger.info(
             f"Validation weights Barrier passed for weights writer for step {step_id}, all weights are written to disk"
@@ -414,15 +414,15 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
         pass
 
 
-def get_weights_exchange_writer(train_backend) -> WeightExchangeWriter:
-    if train_backend.weights_exchange_comm_backend == "file":
-        return FileWeightExchangeWriter(train_backend)
-    elif train_backend.weights_exchange_comm_backend == "nccl":
-        return NCCLWeightsWriter(train_backend)
-    elif train_backend.weights_exchange_comm_backend == "astate":
+def get_weights_exchange_writer(train_engine) -> WeightExchangeWriter:
+    if train_engine.weights_exchange_comm_backend == "file":
+        return FileWeightExchangeWriter(train_engine)
+    elif train_engine.weights_exchange_comm_backend == "nccl":
+        return NCCLWeightsWriter(train_engine)
+    elif train_engine.weights_exchange_comm_backend == "astate":
         from awex.writer.astate_writer import AStateWeightsWriter
 
-        return AStateWeightsWriter(train_backend)
+        return AStateWeightsWriter(train_engine)
     raise ValueError(
-        f"Unsupported weights exchange comm backend: {train_backend.weights_exchange_comm_backend}"
+        f"Unsupported weights exchange comm backend: {train_engine.weights_exchange_comm_backend}"
     )

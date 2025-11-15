@@ -38,13 +38,13 @@ from awex.models.registry import get_train_weights_converter
 class McoreParamMetaResolver(ParamMetaResolver):
     def __init__(
         self,
-        train_backend,
+        train_engine,
         hf_config: PretrainedConfig,
         infer_conf: Dict,
     ):
         super().__init__(hf_config)
-        self._train_backend = train_backend
-        self._mcore_model = train_backend.model_engine
+        self._train_engine = train_engine
+        self._mcore_model = train_engine.model_engine
         self._model_arch_name = self.hf_config.architectures[0]
         from awex.sharding.mcore_sharding import (
             get_mcore_rank_info,
@@ -64,7 +64,7 @@ class McoreParamMetaResolver(ParamMetaResolver):
         suffix = (
             f"_{rank}_{os.getpid()}_{datetime.now().strftime('%Y_%m_%d_%H_%M_%S')}.json"
         )
-        if self._train_backend.enable_debug_mode:
+        if self._train_engine.enable_debug_mode:
             non_converted_params_raw_meta = self._collect_model_param_raw_info(False)
             filename = f"train_params_non_converted_raw_meta{suffix}"
             abs_filename = os.path.abspath(filename)
@@ -74,14 +74,14 @@ class McoreParamMetaResolver(ParamMetaResolver):
                 f"Training rank {rank}, non_converted_params_raw_meta: {abs_filename}"
             )
         self._params_raw_meta = self._collect_model_param_raw_info(True)
-        if self._train_backend.enable_debug_mode:
+        if self._train_engine.enable_debug_mode:
             filename = f"train_params_raw_meta{suffix}"
             abs_filename = os.path.abspath(filename)
             with open(abs_filename, "w") as f:
                 json.dump(to_dict(self._params_raw_meta), f, indent=4)
             logger.info(f"Training rank {rank}, params_raw_meta: {abs_filename}")
         self._params_meta = self._build_params_meta()
-        if self._train_backend.enable_debug_mode:
+        if self._train_engine.enable_debug_mode:
             filename = f"train_params_meta{suffix}"
             abs_filename = os.path.abspath(filename)
             with open(abs_filename, "w") as f:
@@ -120,7 +120,7 @@ class McoreParamMetaResolver(ParamMetaResolver):
         from awex.converter.mcore_converter import get_mcore_model_parameters
 
         mcore_to_hf_weight_converter = get_train_weights_converter(
-            self._train_backend.engine_name
+            self._train_engine.engine_name
         )(self._model_arch_name, self.hf_config, self._rank_info, self._infer_conf)
         for model in self._mcore_model:
             params_dict = get_mcore_model_parameters(model)

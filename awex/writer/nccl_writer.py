@@ -174,7 +174,7 @@ class NCCLWeightsWriter(WeightsExchangeShardingWriter):
         logger.info(
             f"Start to write weights in colocate mode for rank {self.transfer_rank}"
         )
-        self.train_backend.release_grad_memory()
+        self.train_engine.release_grad_memory()
         converted = self.convert_parameters()
         tensors, names = [], []
         for name, tensor in converted.items():
@@ -206,7 +206,7 @@ class NCCLWeightsWriter(WeightsExchangeShardingWriter):
 
         release_tensors(tensors)
         del tensors
-        self.train_backend.release_memory_occupation("weights")
+        self.train_engine.release_memory_occupation("weights")
         self.meta_server_client.add_object_to_set(
             "all_training_offloaded_weights", self.transfer_rank
         )
