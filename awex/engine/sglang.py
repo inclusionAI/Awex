@@ -16,7 +16,7 @@
 # under the License.
 
 import time
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 
 from awex.config import InferenceConfig
 from awex.engine.core import InferenceEngine
@@ -29,8 +29,10 @@ logger = logging.getLogger(__name__)
 
 
 class SGlangEngine(InferenceEngine):
-    def __init__(self, hf_config, config: InferenceConfig, sgl_engine):
-        super().__init__(hf_config)
+    def __init__(self, config: Union[Dict[str, Any], InferenceConfig], sgl_engine):
+        super().__init__(sgl_engine.tokenizer_manager.model_config)
+        if isinstance(config, dict):
+            config = InferenceConfig(**config)
         self._config = config
         self._sgl_engine = sgl_engine
         self.engine_rank = config.engine_rank
@@ -48,7 +50,7 @@ class SGlangEngine(InferenceEngine):
     def config(self):
         return self._config
 
-    def initialize(self, config: Dict[str, Any]) -> None:
+    def initialize(self) -> None:
         if self.config.node_rank == 0:
             logger.info(
                 f"Start to initialize weights exchange reader for {self.rank_coordinate}"
@@ -148,3 +150,12 @@ class SGlangEngine(InferenceEngine):
                 f"execute task in model workers"
             )
         return self._sgl_engine.execute_task_in_model_worker(fn, **kwargs)
+
+
+def extract_sgl_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    from sglang.srt.server_args import ServerArgs
+
+    engine_kwargs = {
+        k: v for k, v in config.items() if k in ServerArgs.__dataclass_fields__
+    }
+    return engine_kwargs

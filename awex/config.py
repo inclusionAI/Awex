@@ -16,7 +16,7 @@
 # under the License.
 
 from dataclasses import field, dataclass
-from typing import Dict, Optional, Literal, List
+from typing import Dict, Optional, Literal, List, Any
 
 
 @dataclass
@@ -49,7 +49,7 @@ class InferenceConfig:
     node_rank: Optional[int] = None
 
     local_rank: Optional[int] = None
-    # Asystem special config
+    # awex specific config
     # the number of all sglang engines in the cluster
     num_engines: int = 1
     # the rank of the current engine
@@ -57,7 +57,7 @@ class InferenceConfig:
     # the address of the meta server: `ip:port`
     meta_server_addr: Optional[str] = None
     # weights exchange communication backend
-    weights_exchange_comm_backend: str = "file"
+    comm_backend: str = "file"
     # how much steps with weights validation, if enabled, weights update will use both file and transfer and
     # compare the weights
     weights_validation_steps: int = 0
@@ -80,3 +80,13 @@ class InferenceConfig:
     # the ipc backend of weights exchange, can be "cpu" or "cuda"
     weights_exchange_ipc_backend: str = "cuda"
     weights_comm_nccl_group_size: int = 1
+
+    @staticmethod
+    def from_dict(config_dict: Dict[str, Any]) -> "InferenceConfig":
+        # remove all keys that are not fields of InferenceConfig
+        config_dict = {
+            k: v
+            for k, v in config_dict.items()
+            if k in InferenceConfig.__dataclass_fields__
+        }
+        return InferenceConfig(**config_dict)

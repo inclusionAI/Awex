@@ -71,30 +71,28 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
         self.model_arch_name = self.hf_config.architectures[0]
         self.validated_steps = 0
         self.start_step = -1
-        self.asystem_train_config = self.train_engine.asystem_train_config
-        self.weights_validation_steps = self.asystem_train_config.get(
-            "weights_validation_steps", 0
-        )
-        self.validate_weights_every_n_steps = self.asystem_train_config.get(
+        self.config = self.train_engine.config
+        self.weights_validation_steps = self.config.get("weights_validation_steps", 0)
+        self.validate_weights_every_n_steps = self.config.get(
             "validate_weights_every_n_steps", 1
         )
-        self.dump_weights_for_validation = self.asystem_train_config.get(
+        self.dump_weights_for_validation = self.config.get(
             "dump_weights_for_validation", False
         )
-        self.disable_pipeline = self.asystem_train_config.get(
+        self.disable_pipeline = self.config.get(
             "disable_weights_exchange_pipeline", False
         )
-        self.enable_nccl_debug_mode = self.asystem_train_config.get(
-            "debug_mode_config", {}
-        ).get("enable_nccl_debug_mode", False)
-        self.dump_weights_list_for_validation = self.asystem_train_config.get(
+        self.enable_nccl_debug_mode = self.config.get("debug_mode_config", {}).get(
+            "enable_nccl_debug_mode", False
+        )
+        self.dump_weights_list_for_validation = self.config.get(
             "dump_weights_list_for_validation", []
         )
-        self.dump_weights_dir_for_validation = self.asystem_train_config.get(
+        self.dump_weights_dir_for_validation = self.config.get(
             "dump_weights_dir_for_validation", os.getcwd()
         )
         logger.info(f"Disable pipeline for weights writer: {self.disable_pipeline}")
-        logger.info(f"Env varabbles for weights writer: {stripped_env_vars()}")
+        logger.info(f"Env variables for weights writer: {stripped_env_vars()}")
         self.lock = threading.Lock()
         self.timeout = 10000
         self.initialized = False
@@ -148,12 +146,11 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
             f"[Writer {self.transfer_rank}] Total local number of elements: {self.total_local_num_elements}, "
             f"total local parameter size: {self.total_local_param_size}"
         )
-        self.curent_worker_parameters_meta = new_meta
-        self.curent_worker_parameters_map = {
+        self.current_worker_parameters_meta = new_meta
+        self.current_worker_parameters_map = {
             parameter_meta.name: parameter_meta for parameter_meta in new_meta
         }
         self._history_write_weights_time = {}
-
         logger.info(
             f"Start to get inference parameters meta from meta server for rank {dist.get_rank()}"
         )
@@ -296,11 +293,11 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
             }
             tensor_pairs = []
             for name, parameter in temp_parameters.items():
-                if name not in self.curent_worker_parameters_map:
+                if name not in self.current_worker_parameters_map:
                     raise ValueError(
                         f"Parameter {name} not found in current worker parameters map"
                     )
-                param_meta = self.curent_worker_parameters_map[name]
+                param_meta = self.current_worker_parameters_map[name]
                 assert len(param_meta.shards) == 1
                 tensor_pairs.append(
                     (
@@ -415,14 +412,14 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
 
 
 def get_weights_exchange_writer(train_engine) -> WeightExchangeWriter:
-    if train_engine.weights_exchange_comm_backend == "file":
+    if train_engine.comm_backend == "file":
         return FileWeightExchangeWriter(train_engine)
-    elif train_engine.weights_exchange_comm_backend == "nccl":
+    elif train_engine.comm_backend == "nccl":
         return NCCLWeightsWriter(train_engine)
-    elif train_engine.weights_exchange_comm_backend == "astate":
+    elif train_engine.comm_backend == "astate":
         from awex.writer.astate_writer import AStateWeightsWriter
 
         return AStateWeightsWriter(train_engine)
     raise ValueError(
-        f"Unsupported weights exchange comm backend: {train_engine.weights_exchange_comm_backend}"
+        f"Unsupported weights exchange comm backend: {train_engine.comm_backend}"
     )

@@ -16,7 +16,7 @@
 # under the License.
 
 from abc import ABC, abstractmethod
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
 
 from awex import logging
 
@@ -37,7 +37,7 @@ class Engine(ABC):
         return self.hf_config
 
     @abstractmethod
-    def initialize(self, config: Dict[str, Any]) -> None:
+    def initialize(self) -> None:
         """Initialize the engine with configuration."""
         pass
 

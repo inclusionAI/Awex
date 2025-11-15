@@ -176,7 +176,7 @@ class WeightsExchangeShardingReader(WeightExchangeReader):
             engine_rank=self.engine_rank,
             num_engines=self.num_engines,
             meta_server_addr=self.meta_server_addr,
-            weights_comm_backend=self.inference_engine.weights_exchange_comm_backend,
+            weights_comm_backend=self.inference_engine.comm_backend,
             enable_debug_mode=self.inference_engine.enable_debug_mode,
             debug_mode_config=self.inference_engine.config.debug_mode_config,
             disable_pipeline=self.inference_engine.config.disable_weights_exchange_pipeline,
@@ -219,7 +219,7 @@ class WeightsExchangeShardingReader(WeightExchangeReader):
             from awex.reader.astate_reader import AStateWorkerWeightsReader
 
             cls = AStateWorkerWeightsReader
-        scheduler._asystem_weights_reader = cls(
+        scheduler.awes_weights_reader = cls(
             model,
             model_context,
             infer_conf,
@@ -235,7 +235,7 @@ class WeightsExchangeShardingReader(WeightExchangeReader):
             ipc_backend=ipc_backend,
             weights_comm_nccl_group_size=kwargs.get("weights_comm_nccl_group_size"),
         )
-        scheduler._asystem_weights_reader.initialize()
+        scheduler.awes_weights_reader.initialize()
 
     def update_weights(self, step_id, **kwargs):
         with self.lock:
@@ -522,14 +522,14 @@ class WeightsExchangeShardingReader(WeightExchangeReader):
     def _pre_update_weights_in_tp_worker(cls, **kwargs):
         model_context = kwargs["model_context"]
         scheduler = model_context["scheduler"]
-        weights_reader = scheduler._asystem_weights_reader
+        weights_reader = scheduler.awes_weights_reader
         weights_reader.pre_update_weights(**kwargs)
 
     @classmethod
     def _update_parameters_in_tp_worker(cls, **kwargs):
         model_context = kwargs["model_context"]
         scheduler = model_context["scheduler"]
-        weights_reader = scheduler._asystem_weights_reader
+        weights_reader = scheduler.awes_weights_reader
         weights_reader.update_weights(**kwargs)
 
 
@@ -597,18 +597,18 @@ class WorkerWeightsReader:
             infer_engine_config=self.infer_engine_config,
             rank_info=self.rank_info,
         )
-        self.curent_worker_parameters_meta = [
+        self.current_worker_parameters_meta = [
             p.to_local_parameter_meta(self.rank_info.global_rank)
             for p in self.parameters_meta
         ]
         self.total_local_num_elements = sum(
             shard.numel
-            for p in self.curent_worker_parameters_meta
+            for p in self.current_worker_parameters_meta
             for shard in p.shards
         )
         self.total_local_param_size = sum(
             shard.numel * shard.dtype.itemsize
-            for p in self.curent_worker_parameters_meta
+            for p in self.current_worker_parameters_meta
             for shard in p.shards
         )
         logger.info(
@@ -658,7 +658,7 @@ class WorkerWeightsReader:
             f"Start to update weights for step {step_id} for rank {self.engine_rank}-{self.rank_info.global_rank}"
         )
         tensor_pairs = []
-        for parameter_meta in self.curent_worker_parameters_meta:
+        for parameter_meta in self.current_worker_parameters_meta:
             name = parameter_meta.name
             parameter = self.parameters[name]
             if len(parameter_meta.shards) != 1:
@@ -693,7 +693,7 @@ class WorkerWeightsReader:
 
 
 def get_weights_exchange_reader(inference_engine) -> WeightExchangeReader:
-    if inference_engine.weights_exchange_comm_backend == "file":
+    if inference_engine.comm_backend == "file":
         return FileWeightExchangeReader(inference_engine)
     meta_resolver = InferParamMetaResolver(
         inference_engine,

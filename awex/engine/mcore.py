@@ -31,17 +31,16 @@ logger = logging.getLogger(__name__)
 
 
 class MegatronEngine(TrainingEngine):
-    def __init__(self, config: Dict[str, Any]):
-        super(MegatronEngine, self).__init__()
+    def __init__(self, config: Dict[str, Any], hf_config, model):
+        super(MegatronEngine, self).__init__(hf_config)
         self.config = config
         logger.info(f"config {self.config}")
+        self.model = model
         self.enable_colocate_mode = self.config.get(
             "enable_colocate_mode", False
         ) or self.config.pop("enable_colocate_mode", False)
         self.enable_debug_mode = self.config.get("enable_debug_mode", False)
-        self.weights_exchange_comm_backend = self.config.get(
-            "weights_exchange_comm_backend", "file"
-        )
+        self.comm_backend = self.config.get("comm_backend", "file")
         self.enable_forward_share_gpu = self.config.get(
             "enable_forward_share_gpu", False
         )
@@ -57,7 +56,7 @@ class MegatronEngine(TrainingEngine):
     def engine_name(self):
         return "mcore"
 
-    def initialize(self, config: Dict[str, Any]) -> None:
+    def initialize(self) -> None:
         self.weights_exchange_writer = get_weights_exchange_writer(self)
         self.weights_exchange_writer.initialize()
         device = torch.cuda.current_device()
