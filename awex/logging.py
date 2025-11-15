@@ -58,6 +58,7 @@ class Logger:
 
         # Get caller's frame info
         import inspect
+
         frame = inspect.currentframe()
         try:
             # Go up the stack: _log -> debug/info/warning/error -> actual caller

@@ -35,14 +35,18 @@ _REDUCE_TENSOR_ARG_DEVICE_INDEX = 6
 
 def _reduce_tensor_modified(*args, **kwargs):
     output_fn, output_args = reductions._reduce_tensor_original(*args, **kwargs)
-    output_args = _modify_tuple(output_args, _REDUCE_TENSOR_ARG_DEVICE_INDEX, _device_to_uuid)
+    output_args = _modify_tuple(
+        output_args, _REDUCE_TENSOR_ARG_DEVICE_INDEX, _device_to_uuid
+    )
     return output_fn, output_args
 
 
 def _rebuild_cuda_tensor_modified(*args):
     raw_args = args
     try:
-        args = _modify_tuple(args, _REDUCE_TENSOR_ARG_DEVICE_INDEX, _device_from_maybe_uuid)
+        args = _modify_tuple(
+            args, _REDUCE_TENSOR_ARG_DEVICE_INDEX, _device_from_maybe_uuid
+        )
         return reductions._rebuild_cuda_tensor_original(*args)
     except Exception as e:
         msg = f"Error rebuilding cuda tensor: {e}, raw_args: {raw_args}, args: {args}"
@@ -172,9 +176,13 @@ def group_tensors_by_shape_and_dtype(
         return [], []
 
     total_size = sum(tensor.numel() * tensor.element_size() for tensor in tensors)
-    logger.info(f"Start to group tensors, total size: {total_size}, num tensors: {len(tensors)}")
+    logger.info(
+        f"Start to group tensors, total size: {total_size}, num tensors: {len(tensors)}"
+    )
     # 1. Group tensors by shape and dtype
-    tensor_groups: Dict[Tuple[torch.Size, torch.dtype], List[Tuple[int, torch.Tensor]]] = {}
+    tensor_groups: Dict[
+        Tuple[torch.Size, torch.dtype], List[Tuple[int, torch.Tensor]]
+    ] = {}
     for i, tensor in enumerate(tensors):
         key = (tensor.shape, tensor.dtype)
         if key not in tensor_groups:
@@ -242,12 +250,16 @@ def group_tensors_by_shape_and_dtype(
                     }
                 )
                 offset_elements += group_tensor_elements
-    logger.info(f"Grouped tensors, num groups: {len(final_tensor_groups)}, num tensors: {len(metadata)}")
+    logger.info(
+        f"Grouped tensors, num groups: {len(final_tensor_groups)}, num tensors: {len(metadata)}"
+    )
     return final_tensor_groups, metadata
 
 
 @torch.no_grad()
-def reconstruct_tensors_from_groups(tensor_groups: List[torch.Tensor], metadata: List[Dict]) -> List[torch.Tensor]:
+def reconstruct_tensors_from_groups(
+    tensor_groups: List[torch.Tensor], metadata: List[Dict]
+) -> List[torch.Tensor]:
     """
     Reconstruct original tensors from grouped tensors and metadata.
 
@@ -276,7 +288,11 @@ def reconstruct_tensors_from_groups(tensor_groups: List[torch.Tensor], metadata:
 
     # Process each tensor group
     for group_idx, group_tensor in enumerate(tensor_groups):
-        if group_idx not in group_metadata or group_tensor is None or group_tensor.numel() == 0:
+        if (
+            group_idx not in group_metadata
+            or group_tensor is None
+            or group_tensor.numel() == 0
+        ):
             raise ValueError(f"Group {group_idx} not found in metadata")
         # Process each tensor in this group
         for item in group_metadata[group_idx]:

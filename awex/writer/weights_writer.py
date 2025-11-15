@@ -26,7 +26,7 @@ from awex.util.common import (
 from awex.util.common import from_binary
 from awex.util.common import stripped_env_vars
 from awex.util.gpu import get_gpu_status
-from awex.util.tensor_util import (check_and_log_nan_values)
+from awex.util.tensor_util import check_and_log_nan_values
 from awex.writer.nccl_writer import NCCLWeightsWriter
 
 logger = logging.getLogger(__name__)
@@ -175,9 +175,9 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
             self.infer_params_meta,
             raise_exception=not self.enable_debug_mode,
         )
-        self.weight_converter = get_train_weights_converter(self.train_backend.engine_name)(
-            self.model_arch_name, self.hf_config, self.rank_info, self.infer_conf
-        )
+        self.weight_converter = get_train_weights_converter(
+            self.train_backend.engine_name
+        )(self.model_arch_name, self.hf_config, self.rank_info, self.infer_conf)
         logger.info("Start to get number of inference engines from meta server")
         self.num_infer_engines = self.meta_server_client.get_object(
             "num_infer_engines", timeout=self.timeout
@@ -413,6 +413,7 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
     def write_tensors(self, step_id, tensor_pairs: List, **kwargs):
         pass
 
+
 def get_weights_exchange_writer(train_backend) -> WeightExchangeWriter:
     if train_backend.weights_exchange_comm_backend == "file":
         return FileWeightExchangeWriter(train_backend)
@@ -420,6 +421,7 @@ def get_weights_exchange_writer(train_backend) -> WeightExchangeWriter:
         return NCCLWeightsWriter(train_backend)
     elif train_backend.weights_exchange_comm_backend == "astate":
         from awex.writer.astate_writer import AStateWeightsWriter
+
         return AStateWeightsWriter(train_backend)
     raise ValueError(
         f"Unsupported weights exchange comm backend: {train_backend.weights_exchange_comm_backend}"

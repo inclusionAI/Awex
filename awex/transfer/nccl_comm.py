@@ -12,6 +12,7 @@ from awex.transfer.transfer_plan import slice_tensor
 
 logger = logging.getLogger(__name__)
 
+
 class NcclColocateTransport:
     def __init__(self, transfer_rank, world_size):
         self.transfer_rank = transfer_rank
@@ -32,17 +33,21 @@ class NcclColocateTransport:
     ):
         logger.info(f"train_to_infer_device_mapping {train_to_infer_device_mapping}")
         logger.info(f"infer_to_train_device_mapping {infer_to_train_device_mapping}")
-        validate_rank_mappings(train_to_infer_device_mapping, infer_to_train_device_mapping)
+        validate_rank_mappings(
+            train_to_infer_device_mapping, infer_to_train_device_mapping
+        )
         start_time = time.time()
         send_ops = dict(send_transfer_plan.operations)
         recv_ops = dict(recv_transfer_plan.operations)
         num_sends = sum(len(ops) for ops in send_ops.values())
         num_recvs = sum(len(ops) for ops in recv_ops.values())
-        logger.info(f"Start to execute weights update for {rank_coordinate},"
-                    f"num_sends {num_sends}, num_recvs {num_recvs}")
+        logger.info(
+            f"Start to execute weights update for {rank_coordinate},"
+            f"num_sends {num_sends}, num_recvs {num_recvs}"
+        )
         p2p_send_op_groups, p2p_recv_op_groups = [], []
         tensors_to_copy = []
-        stage, last_stage = 0, -1
+        stage = 0
         stage_offsets = []
         train_slice_context = {}
         while stage < world_size:
@@ -58,11 +63,15 @@ class NcclColocateTransport:
             if had_send_entries:
                 for op in send_ops[send_to_rank]:
                     send_tensor = send_parameters[op.send_shard_meta.name]
-                    tensor_sliced = slice_tensor(send_tensor, op, True, slice_context=train_slice_context)
+                    tensor_sliced = slice_tensor(
+                        send_tensor, op, True, slice_context=train_slice_context
+                    )
                     if send_to_rank == transfer_rank:
                         tensors_to_copy.append(tensor_sliced)
                         continue
-                    assert send_to_rank == op.recv_rank, f"rank unmatched: {send_to_rank} {op.recv_rank}"
+                    assert send_to_rank == op.recv_rank, (
+                        f"rank unmatched: {send_to_rank} {op.recv_rank}"
+                    )
                     p2p_op = dist.P2POp(
                         dist.isend,
                         tensor_sliced.clone(),
@@ -79,13 +88,15 @@ class NcclColocateTransport:
                         continue
                     recv_tensor = recv_parameters[op.recv_shard_meta.name]
                     tensor_sliced = slice_tensor(recv_tensor, op, False)
-                    assert send_rank == op.send_rank, f"rank unmatched: {send_rank} {op.send_rank}"
+                    assert send_rank == op.send_rank, (
+                        f"rank unmatched: {send_rank} {op.send_rank}"
+                    )
                     p2p_op = dist.P2POp(
-                            dist.irecv,
-                            tensor_sliced,
-                            op_send_rank,
-                            group=weights_update_group,
-                        )
+                        dist.irecv,
+                        tensor_sliced,
+                        op_send_rank,
+                        group=weights_update_group,
+                    )
                     p2p_recv_ops.append((op, p2p_op))
             if had_send_entries and send_to_rank != transfer_rank and not p2p_send_ops:
                 raise RuntimeError(
@@ -93,7 +104,11 @@ class NcclColocateTransport:
                     f"stage_offset {stage_offset}, transfer_rank {transfer_rank} "
                     f"expected sends to rank {send_to_rank} but built zero P2P ops."
                 )
-            if had_recv_entries and recv_from_rank != transfer_rank and not p2p_recv_ops:
+            if (
+                had_recv_entries
+                and recv_from_rank != transfer_rank
+                and not p2p_recv_ops
+            ):
                 raise RuntimeError(
                     f"Inconsistent recv plan for rank {rank_coordinate}: "
                     f"stage_offset {stage_offset}, transfer_rank {transfer_rank} "
@@ -109,7 +124,7 @@ class NcclColocateTransport:
                 tensors_to_copy,
                 recv_transfer_plan.operations[send_rank],
                 recv_parameters,
-                f"tensor copy for {rank_coordinate}"
+                f"tensor copy for {rank_coordinate}",
             )
         else:
             logger.info(f"No tensors to copy for {rank_coordinate}")
@@ -126,14 +141,20 @@ class NcclColocateTransport:
                 assert not recv_ops
             else:
                 # Compute partition so every sender and its peer receiver pick opposite phases
-                partition = compute_two_phase_partition(transfer_rank, stage_offset, world_size)
+                partition = compute_two_phase_partition(
+                    transfer_rank, stage_offset, world_size
+                )
                 # Phase 1: Partition 0 sends, partition 1 receives
                 if partition == 0:
                     if send_ops:
-                        execute_p2p_op_list(send_ops, f"p2p send for {stage_name}", weights_update_group)
+                        execute_p2p_op_list(
+                            send_ops, f"p2p send for {stage_name}", weights_update_group
+                        )
                 else:
                     if recv_ops:
-                        execute_p2p_op_list(recv_ops, f"p2p recv for {stage_name}", weights_update_group)
+                        execute_p2p_op_list(
+                            recv_ops, f"p2p recv for {stage_name}", weights_update_group
+                        )
 
                 # Global barrier after Phase 1 to ensure all ranks complete before Phase 2
                 # This is necessary because NCCL might have internal state that requires synchronization
@@ -142,10 +163,14 @@ class NcclColocateTransport:
                 # Phase 2: Partition 0 receives, partition 1 sends
                 if partition == 0:
                     if recv_ops:
-                        execute_p2p_op_list(recv_ops, f"p2p recv for {stage_name}", weights_update_group)
+                        execute_p2p_op_list(
+                            recv_ops, f"p2p recv for {stage_name}", weights_update_group
+                        )
                 else:
                     if send_ops:
-                        execute_p2p_op_list(send_ops, f"p2p send for {stage_name}", weights_update_group)
+                        execute_p2p_op_list(
+                            send_ops, f"p2p send for {stage_name}", weights_update_group
+                        )
 
                 # Global barrier after Phase 2 to ensure all ranks complete before next stage
                 dist.barrier(group=weights_update_group)
@@ -155,25 +180,32 @@ class NcclColocateTransport:
         logger.info(f"[{os.getpid()}] All p2p stages completed for {rank_coordinate}")
 
         duration = time.time() - start_time
-        logger.info(f"Finished executing weights update for {rank_coordinate}, took {duration:.4f} seconds")
+        logger.info(
+            f"Finished executing weights update for {rank_coordinate}, took {duration:.4f} seconds"
+        )
 
 
 def execute_tensors_to_copy(tensors_to_copy, copy_ops, recv_parameters, stage: str):
     start_time = time.time()
     num_ops = len(copy_ops)
     logger.info(f"Start to execute {num_ops} copy operations for {stage}")
-    assert len(copy_ops) == len(tensors_to_copy), \
+    assert len(copy_ops) == len(tensors_to_copy), (
         f"Number of copy operations mismatch: {len(copy_ops)} != {len(tensors_to_copy)}"
+    )
     for send_tensor, recv_op in zip(tensors_to_copy, copy_ops):
         recv_tensor = recv_parameters[recv_op.recv_shard_meta.name]
         recv_tensor_sliced = slice_tensor(recv_tensor, recv_op, False)
         recv_tensor_sliced.copy_(send_tensor)
     duration = time.time() - start_time
     torch.cuda.synchronize(device=torch.cuda.current_device())
-    logger.info(f"Finished executing {num_ops} copy operations for {stage}, took {duration:.4f} seconds")
+    logger.info(
+        f"Finished executing {num_ops} copy operations for {stage}, took {duration:.4f} seconds"
+    )
 
 
-def validate_rank_mappings(train_to_infer_device_mapping, infer_to_train_device_mapping):
+def validate_rank_mappings(
+    train_to_infer_device_mapping, infer_to_train_device_mapping
+):
     for train_rank, infer_rank in train_to_infer_device_mapping.items():
         mapped_back = infer_to_train_device_mapping.get(infer_rank)
         if mapped_back != train_rank:
@@ -213,9 +245,17 @@ hang_detector = ThreadPoolExecutor(max_workers=1)
 
 
 def summary_meta(p2p_op_list):
-    return [(plan_op.send_shard_meta.name, plan_op.recv_shard_meta.name,
-             op.tensor.dtype, list(op.tensor.shape), op.tensor.is_contiguous(), op.peer)
-            for plan_op, op in p2p_op_list]
+    return [
+        (
+            plan_op.send_shard_meta.name,
+            plan_op.recv_shard_meta.name,
+            op.tensor.dtype,
+            list(op.tensor.shape),
+            op.tensor.is_contiguous(),
+            op.peer,
+        )
+        for plan_op, op in p2p_op_list
+    ]
 
 
 def detect_hang(future, msg, p2p_op_list, timeout=30):
@@ -223,7 +263,9 @@ def detect_hang(future, msg, p2p_op_list, timeout=30):
         future.result(timeout=timeout)
     except Exception:
         meta_summary = summary_meta(p2p_op_list)
-        logger.exception(f"Exception while detecting hang at [{msg}], meta: {meta_summary}")
+        logger.exception(
+            f"Exception while detecting hang at [{msg}], meta: {meta_summary}"
+        )
         stack = get_stack_trace(os.getpid())
         logger.info(f"Stacktrace [{msg}]:\n{stack}")
         pass
@@ -233,10 +275,10 @@ def get_stack_trace(pid):
     """Get stack trace for a process using py-spy"""
     try:
         result = subprocess.run(
-            ['py-spy', 'dump', '--pid', str(pid)],
+            ["py-spy", "dump", "--pid", str(pid)],
             capture_output=True,
             text=True,
-            timeout=10
+            timeout=10,
         )
         return result.stdout
     except subprocess.TimeoutExpired:
@@ -257,7 +299,9 @@ def execute_p2p_op_list(p2p_op_list, stage: str, weights_update_group):
     num_sends = sum(1 for _, op in p2p_op_list if op.op == dist.isend)
     num_recvs = sum(1 for _, op in p2p_op_list if op.op == dist.irecv)
 
-    logger.info(f"[{os.getpid()}] Start to execute {num_ops} p2p operations for {stage}, {num_sends} sends, {num_recvs} recvs")
+    logger.info(
+        f"[{os.getpid()}] Start to execute {num_ops} p2p operations for {stage}, {num_sends} sends, {num_recvs} recvs"
+    )
     if p2p_op_list:
         # Use synchronous send/recv
         msg = f"[{os.getpid()}] Using synchronous send/recv for {num_ops} operations for stage {stage}"
@@ -268,18 +312,26 @@ def execute_p2p_op_list(p2p_op_list, stage: str, weights_update_group):
         # Execute synchronous operations
         for _, p2p_op in p2p_op_list:
             if p2p_op.op == dist.isend:
-                logger.debug(f"[{os.getpid()}] send to rank {p2p_op.peer}, tensor shape {p2p_op.tensor.shape}")
+                logger.debug(
+                    f"[{os.getpid()}] send to rank {p2p_op.peer}, tensor shape {p2p_op.tensor.shape}"
+                )
                 dist.send(p2p_op.tensor, p2p_op.peer, group=p2p_op.group)
             elif p2p_op.op == dist.irecv:
-                logger.debug(f"[{os.getpid()}] recv from rank {p2p_op.peer}, tensor shape {p2p_op.tensor.shape}")
+                logger.debug(
+                    f"[{os.getpid()}] recv from rank {p2p_op.peer}, tensor shape {p2p_op.tensor.shape}"
+                )
                 dist.recv(p2p_op.tensor, p2p_op.peer, group=p2p_op.group)
             else:
                 raise ValueError(f"Unknown p2p op: {p2p_op.op}")
 
         torch.cuda.synchronize()
         future.set_result(True)
-        logger.info(f"[{os.getpid()}] All sync operations completed for {num_ops} operations for {stage}")
+        logger.info(
+            f"[{os.getpid()}] All sync operations completed for {num_ops} operations for {stage}"
+        )
     else:
         logger.info(f"[{os.getpid()}] No p2p operations for {stage}")
     duration = time.time() - start_time
-    logger.info(f"[{os.getpid()}] Finished executing {num_ops} p2p operations for {stage}, took {duration:.4f} seconds")
+    logger.info(
+        f"[{os.getpid()}] Finished executing {num_ops} p2p operations for {stage}, took {duration:.4f} seconds"
+    )

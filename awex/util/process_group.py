@@ -31,9 +31,9 @@ def init_custom_process_group(
         rendezvous,
     )
 
-    assert (store is None) or (
-        init_method is None
-    ), "Cannot specify both init_method and store."
+    assert (store is None) or (init_method is None), (
+        "Cannot specify both init_method and store."
+    )
 
     if store is not None:
         assert world_size > 0, "world_size must be positive if using store"
@@ -102,7 +102,6 @@ def create_pair_subgroups_from_parent(parent_group, world_size):
     """
     try:
         from torch.distributed.distributed_c10d import (
-            Backend,
             PrefixStore,
             _new_process_group_helper,
             _world,
@@ -114,7 +113,9 @@ def create_pair_subgroups_from_parent(parent_group, world_size):
         # Get the backend and store from the parent group
         backend, parent_store = _world.pg_map[parent_group]
 
-        logger.info(f"Creating pair subgroups from parent group with backend={backend}, my_rank={my_rank}, world_size={world_size}")
+        logger.info(
+            f"Creating pair subgroups from parent group with backend={backend}, my_rank={my_rank}, world_size={world_size}"
+        )
 
         # Create subgroups for all pairs
         pair_subgroups = {}
@@ -138,7 +139,9 @@ def create_pair_subgroups_from_parent(parent_group, world_size):
 
                 # Determine the appropriate parameter name based on PyTorch version
                 pg_options_param_name = (
-                    "backend_options" if str(torch.__version__) >= "2.6" else "pg_options"
+                    "backend_options"
+                    if str(torch.__version__) >= "2.6"
+                    else "pg_options"
                 )
 
                 # Create the pair subgroup using _new_process_group_helper
@@ -158,15 +161,18 @@ def create_pair_subgroups_from_parent(parent_group, world_size):
                 _world.pg_group_ranks[pg] = {0: i, 1: j}
 
                 pair_subgroups[(i, j)] = pg
-                logger.info(f"Rank {my_rank} created pair subgroup ({i}, {j}) with pair_rank={pair_rank}")
+                logger.info(
+                    f"Rank {my_rank} created pair subgroup ({i}, {j}) with pair_rank={pair_rank}"
+                )
 
-        logger.info(f"Rank {my_rank} built {len(pair_subgroups)} pair subgroups from parent group")
+        logger.info(
+            f"Rank {my_rank} built {len(pair_subgroups)} pair subgroups from parent group"
+        )
         return pair_subgroups if pair_subgroups else None
 
     except Exception as e:
         logger.exception(f"Failed to build pair subgroups: {e}")
         return None
-
 
 
 def init_weights_update_group(
@@ -275,4 +281,3 @@ def setup_batch_isend_irecv(
         )
 
     logger.info("Simple communication verification successful")
-

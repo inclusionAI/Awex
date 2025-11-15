@@ -255,9 +255,9 @@ class TestCheckAndLogNanValues:
             if "First 0 NaN indices" in args:
                 found_zero_indices = True
                 break
-        assert (
-            found_zero_indices
-        ), "Should log 'First 0 NaN indices' when max_indices is 0"
+        assert found_zero_indices, (
+            "Should log 'First 0 NaN indices' when max_indices is 0"
+        )
 
 
 class TestCompareAndLogTensorDifferences:
@@ -326,9 +326,9 @@ class TestCompareAndLogTensorDifferences:
             if "has 6 inconsistent elements" in args:
                 found_inconsistent_count = True
                 break
-        assert (
-            found_inconsistent_count
-        ), "Should log the number of inconsistent elements"
+        assert found_inconsistent_count, (
+            "Should log the number of inconsistent elements"
+        )
 
     def test_shape_mismatch(self):
         """Test function with tensors of different shapes."""
@@ -371,9 +371,9 @@ class TestCompareAndLogTensorDifferences:
             if "has 2 inconsistent elements" in args:
                 found_inconsistent_count = True
                 break
-        assert (
-            found_inconsistent_count
-        ), "Should log the number of inconsistent elements"
+        assert found_inconsistent_count, (
+            "Should log the number of inconsistent elements"
+        )
 
     def test_max_differences_limit(self):
         """Test function with max_differences limit."""
@@ -515,6 +515,6 @@ def test_setup_batch_isend_irecv_8_processes():
     # Verify all succeeded
     assert len(results) == world_size
     for rank, success, *error in results:
-        assert (
-            success
-        ), f"Process {rank} failed: {error[0] if error else 'unknown error'}"
+        assert success, (
+            f"Process {rank} failed: {error[0] if error else 'unknown error'}"
+        )

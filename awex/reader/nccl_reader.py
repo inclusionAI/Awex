@@ -15,7 +15,9 @@ from awex.util.common import get_ip_address, get_free_port
 from awex.util.gpu import get_gpu_status, print_current_gpu_status
 from awex.util.system_util import count_open_fds
 from awex.util.tensor_util import (
-    ipc_deserialize, cuda_ipc_deserialize, reconstruct_tensors_from_groups,
+    ipc_deserialize,
+    cuda_ipc_deserialize,
+    reconstruct_tensors_from_groups,
 )
 
 logger = logging.getLogger(__name__)
@@ -188,7 +190,10 @@ class NCCLWorkerWeightsReader(WorkerWeightsReader):
             self.infer_to_train_device_mapping[self.transfer_rank],
         )
         from awex.transfer.nccl_stream_batch import NcclColocateStreamBatchTransport
-        self.colocate_transport = NcclColocateStreamBatchTransport(self.transfer_rank, self.infer_world_size)
+
+        self.colocate_transport = NcclColocateStreamBatchTransport(
+            self.transfer_rank, self.infer_world_size
+        )
         logger.info(
             f"Initialized NCCL weights reader for rank {self.transfer_rank} in colocate mode"
         )

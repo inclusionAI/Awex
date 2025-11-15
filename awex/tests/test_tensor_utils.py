@@ -16,7 +16,7 @@ class TestGroupTensorsByShapeAndDtype:
         """Test function with empty tensors list."""
         tensors = []
         result_groups, result_metadata = group_tensors_by_shape_and_dtype(tensors)
-        
+
         assert result_groups == []
         assert result_metadata == []
 
@@ -24,23 +24,23 @@ class TestGroupTensorsByShapeAndDtype:
         """Test function with a single tensor."""
         tensor = torch.randn(3, 4, dtype=torch.float32)
         tensors = [tensor]
-        
+
         result_groups, result_metadata = group_tensors_by_shape_and_dtype(tensors)
-        
+
         assert len(result_groups) == 1
         assert len(result_metadata) == 1
-        
+
         # Check that the group contains the original tensor
         assert torch.equal(result_groups[0], tensor)
-        
+
         # Check metadata
         metadata = result_metadata[0]
-        assert metadata['original_index'] == 0
-        assert metadata['shape'] == tensor.shape
-        assert metadata['dtype'] == tensor.dtype
-        assert metadata['group_index'] == 0
-        assert metadata['offset'] == 0
-        assert metadata['size'] == tensor.numel()
+        assert metadata["original_index"] == 0
+        assert metadata["shape"] == tensor.shape
+        assert metadata["dtype"] == tensor.dtype
+        assert metadata["group_index"] == 0
+        assert metadata["offset"] == 0
+        assert metadata["size"] == tensor.numel()
 
     def test_tensors_same_shape_and_dtype(self):
         """Test function with multiple tensors of same shape and dtype."""
@@ -48,23 +48,23 @@ class TestGroupTensorsByShapeAndDtype:
         tensor2 = torch.randn(2, 3, dtype=torch.float32)
         tensor3 = torch.randn(2, 3, dtype=torch.float32)
         tensors = [tensor1, tensor2, tensor3]
-        
+
         result_groups, result_metadata = group_tensors_by_shape_and_dtype(tensors)
-        
+
         assert len(result_groups) == 1
         assert len(result_metadata) == 3
-        
+
         # Check that all tensors are concatenated in one group
         expected_concatenated = torch.cat([tensor1, tensor2, tensor3], dim=0)
         assert torch.equal(result_groups[0], expected_concatenated)
-        
+
         # Check metadata for each tensor
         for i, metadata in enumerate(result_metadata):
-            assert metadata['original_index'] == i
-            assert metadata['shape'] == tensor1.shape
-            assert metadata['dtype'] == tensor1.dtype
-            assert metadata['group_index'] == 0
-            assert metadata['size'] == tensor1.numel()
+            assert metadata["original_index"] == i
+            assert metadata["shape"] == tensor1.shape
+            assert metadata["dtype"] == tensor1.dtype
+            assert metadata["group_index"] == 0
+            assert metadata["size"] == tensor1.numel()
 
     def test_tensors_different_shapes(self):
         """Test function with tensors of different shapes."""
@@ -72,22 +72,22 @@ class TestGroupTensorsByShapeAndDtype:
         tensor2 = torch.randn(4, 5, dtype=torch.float32)
         tensor3 = torch.randn(2, 3, dtype=torch.float32)
         tensors = [tensor1, tensor2, tensor3]
-        
+
         result_groups, result_metadata = group_tensors_by_shape_and_dtype(tensors)
-        
+
         assert len(result_groups) == 2  # Two different shapes
         assert len(result_metadata) == 3
-        
+
         # Check that tensors with same shape are grouped together
         # tensor1 and tensor3 should be in one group
         # tensor2 should be in another group
         shape_groups = {}
         for metadata in result_metadata:
-            shape = metadata['shape']
+            shape = metadata["shape"]
             if shape not in shape_groups:
                 shape_groups[shape] = []
-            shape_groups[shape].append(metadata['original_index'])
-        
+            shape_groups[shape].append(metadata["original_index"])
+
         assert set(shape_groups[torch.Size([2, 3])]) == {0, 2}
         assert set(shape_groups[torch.Size([4, 5])]) == {1}
 
@@ -97,20 +97,20 @@ class TestGroupTensorsByShapeAndDtype:
         tensor2 = torch.randn(2, 3, dtype=torch.float64)
         tensor3 = torch.randn(2, 3, dtype=torch.float32)
         tensors = [tensor1, tensor2, tensor3]
-        
+
         result_groups, result_metadata = group_tensors_by_shape_and_dtype(tensors)
-        
+
         assert len(result_groups) == 2  # Two different dtypes
         assert len(result_metadata) == 3
-        
+
         # Check that tensors with same dtype are grouped together
         dtype_groups = {}
         for metadata in result_metadata:
-            dtype = metadata['dtype']
+            dtype = metadata["dtype"]
             if dtype not in dtype_groups:
                 dtype_groups[dtype] = []
-            dtype_groups[dtype].append(metadata['original_index'])
-        
+            dtype_groups[dtype].append(metadata["original_index"])
+
         assert set(dtype_groups[torch.float32]) == {0, 2}
         assert set(dtype_groups[torch.float64]) == {1}
 
@@ -119,15 +119,17 @@ class TestGroupTensorsByShapeAndDtype:
         # Create tensors that would exceed the default 5GB limit when grouped
         large_tensor = torch.randn(1000, 1000, dtype=torch.float32)  # ~4MB each
         tensors = [large_tensor] * 6  # ~24MB total
-        
+
         # Set a smaller max_tensor_size to force splitting
         max_size = 10 * 1024 * 1024  # 10MB
-        result_groups, result_metadata = group_tensors_by_shape_and_dtype(tensors, max_size)
-        
+        result_groups, result_metadata = group_tensors_by_shape_and_dtype(
+            tensors, max_size
+        )
+
         # Should create multiple groups
         assert len(result_groups) > 1
         assert len(result_metadata) == len(tensors)
-        
+
         # Check that each group size is within limit
         for group in result_groups:
             group_size = group.element_size() * group.numel()
@@ -139,12 +141,12 @@ class TestGroupTensorsByShapeAndDtype:
         tensor2 = torch.randn(2, 3, 4, dtype=torch.float32)
         tensor3 = torch.randn(1, 5, dtype=torch.float32)
         tensors = [tensor1, tensor2, tensor3]
-        
+
         result_groups, result_metadata = group_tensors_by_shape_and_dtype(tensors)
-        
+
         assert len(result_groups) == 2  # Two different shapes
         assert len(result_metadata) == 3
-        
+
         # Verify reconstruction works correctly
         reconstructed = reconstruct_tensors_from_groups(result_groups, result_metadata)
         assert len(reconstructed) == 3
@@ -165,17 +167,19 @@ class TestReconstructTensorsFromGroups:
         """Test reconstruction of a single tensor."""
         original_tensor = torch.randn(3, 4, dtype=torch.float32)
         tensor_groups = [original_tensor]
-        metadata = [{
-            'original_index': 0,
-            'shape': original_tensor.shape,
-            'dtype': original_tensor.dtype,
-            'group_index': 0,
-            'offset': 0,
-            'size': original_tensor.numel()
-        }]
-        
+        metadata = [
+            {
+                "original_index": 0,
+                "shape": original_tensor.shape,
+                "dtype": original_tensor.dtype,
+                "group_index": 0,
+                "offset": 0,
+                "size": original_tensor.numel(),
+            }
+        ]
+
         result = reconstruct_tensors_from_groups(tensor_groups, metadata)
-        
+
         assert len(result) == 1
         assert torch.equal(result[0], original_tensor)
 
@@ -184,29 +188,29 @@ class TestReconstructTensorsFromGroups:
         tensor1 = torch.randn(2, 3, dtype=torch.float32)
         tensor2 = torch.randn(2, 3, dtype=torch.float32)
         concatenated = torch.cat([tensor1, tensor2], dim=0)
-        
+
         tensor_groups = [concatenated]
         metadata = [
             {
-                'original_index': 0,
-                'shape': tensor1.shape,
-                'dtype': tensor1.dtype,
-                'group_index': 0,
-                'offset': 0,
-                'size': tensor1.numel()
+                "original_index": 0,
+                "shape": tensor1.shape,
+                "dtype": tensor1.dtype,
+                "group_index": 0,
+                "offset": 0,
+                "size": tensor1.numel(),
             },
             {
-                'original_index': 1,
-                'shape': tensor2.shape,
-                'dtype': tensor2.dtype,
-                'group_index': 0,
-                'offset': tensor1.numel(),
-                'size': tensor2.numel()
-            }
+                "original_index": 1,
+                "shape": tensor2.shape,
+                "dtype": tensor2.dtype,
+                "group_index": 0,
+                "offset": tensor1.numel(),
+                "size": tensor2.numel(),
+            },
         ]
-        
+
         result = reconstruct_tensors_from_groups(tensor_groups, metadata)
-        
+
         assert len(result) == 2
         assert torch.equal(result[0], tensor1)
         assert torch.equal(result[1], tensor2)
@@ -217,41 +221,41 @@ class TestReconstructTensorsFromGroups:
         tensor1 = torch.randn(2, 3, dtype=torch.float32)
         tensor2 = torch.randn(2, 3, dtype=torch.float32)
         group1 = torch.cat([tensor1, tensor2], dim=0)
-        
+
         # Group 2: tensor with shape (4, 5)
         tensor3 = torch.randn(4, 5, dtype=torch.float32)
         group2 = tensor3
-        
+
         tensor_groups = [group1, group2]
         metadata = [
             {
-                'original_index': 0,
-                'shape': tensor1.shape,
-                'dtype': tensor1.dtype,
-                'group_index': 0,
-                'offset': 0,
-                'size': tensor1.numel()
+                "original_index": 0,
+                "shape": tensor1.shape,
+                "dtype": tensor1.dtype,
+                "group_index": 0,
+                "offset": 0,
+                "size": tensor1.numel(),
             },
             {
-                'original_index': 1,
-                'shape': tensor2.shape,
-                'dtype': tensor2.dtype,
-                'group_index': 0,
-                'offset': tensor1.numel(),
-                'size': tensor2.numel()
+                "original_index": 1,
+                "shape": tensor2.shape,
+                "dtype": tensor2.dtype,
+                "group_index": 0,
+                "offset": tensor1.numel(),
+                "size": tensor2.numel(),
             },
             {
-                'original_index': 2,
-                'shape': tensor3.shape,
-                'dtype': tensor3.dtype,
-                'group_index': 1,
-                'offset': 0,
-                'size': tensor3.numel()
-            }
+                "original_index": 2,
+                "shape": tensor3.shape,
+                "dtype": tensor3.dtype,
+                "group_index": 1,
+                "offset": 0,
+                "size": tensor3.numel(),
+            },
         ]
-        
+
         result = reconstruct_tensors_from_groups(tensor_groups, metadata)
-        
+
         assert len(result) == 3
         assert torch.equal(result[0], tensor1)
         assert torch.equal(result[1], tensor2)
@@ -262,29 +266,29 @@ class TestReconstructTensorsFromGroups:
         tensor1 = torch.randn(2, 3, dtype=torch.float32)
         tensor2 = torch.randn(2, 3, dtype=torch.float32)
         concatenated = torch.cat([tensor1, tensor2], dim=0)
-        
+
         tensor_groups = [concatenated]
         metadata = [
             {
-                'original_index': 5,  # Non-sequential index
-                'shape': tensor1.shape,
-                'dtype': tensor1.dtype,
-                'group_index': 0,
-                'offset': 0,
-                'size': tensor1.numel()
+                "original_index": 5,  # Non-sequential index
+                "shape": tensor1.shape,
+                "dtype": tensor1.dtype,
+                "group_index": 0,
+                "offset": 0,
+                "size": tensor1.numel(),
             },
             {
-                'original_index': 2,  # Non-sequential index
-                'shape': tensor2.shape,
-                'dtype': tensor2.dtype,
-                'group_index': 0,
-                'offset': tensor1.numel(),
-                'size': tensor2.numel()
-            }
+                "original_index": 2,  # Non-sequential index
+                "shape": tensor2.shape,
+                "dtype": tensor2.dtype,
+                "group_index": 0,
+                "offset": tensor1.numel(),
+                "size": tensor2.numel(),
+            },
         ]
-        
+
         result = reconstruct_tensors_from_groups(tensor_groups, metadata)
-        
+
         assert len(result) == 6  # Max index + 1
         assert torch.equal(result[5], tensor1)
         assert torch.equal(result[2], tensor2)
@@ -297,30 +301,34 @@ class TestReconstructTensorsFromGroups:
     def test_missing_group_raises_error(self):
         """Test that missing group raises ValueError."""
         tensor_groups = [torch.randn(2, 3)]
-        metadata = [{
-            'original_index': 0,
-            'shape': torch.Size([2, 3]),
-            'dtype': torch.float32,
-            'group_index': 1,  # Group index that doesn't exist
-            'offset': 0,
-            'size': 6
-        }]
-        
+        metadata = [
+            {
+                "original_index": 0,
+                "shape": torch.Size([2, 3]),
+                "dtype": torch.float32,
+                "group_index": 1,  # Group index that doesn't exist
+                "offset": 0,
+                "size": 6,
+            }
+        ]
+
         with pytest.raises(ValueError, match="Group 0 not found in metadata"):
             reconstruct_tensors_from_groups(tensor_groups, metadata)
 
     def test_empty_group_raises_error(self):
         """Test that empty group raises ValueError."""
         tensor_groups = [torch.randn(2, 3)]
-        metadata = [{
-            'original_index': 0,
-            'shape': torch.Size([2, 3]),
-            'dtype': torch.float32,
-            'group_index': 0,
-            'offset': 0,
-            'size': 6
-        }]
-        
+        metadata = [
+            {
+                "original_index": 0,
+                "shape": torch.Size([2, 3]),
+                "dtype": torch.float32,
+                "group_index": 0,
+                "offset": 0,
+                "size": 6,
+            }
+        ]
+
         # Create a situation where the group has zero elements
         empty_tensor = torch.tensor([])
         tensor_groups[0] = empty_tensor
@@ -330,15 +338,17 @@ class TestReconstructTensorsFromGroups:
     def test_none_group_raises_error(self):
         """Test that None group raises ValueError."""
         tensor_groups = [None]
-        metadata = [{
-            'original_index': 0,
-            'shape': torch.Size([2, 3]),
-            'dtype': torch.float32,
-            'group_index': 0,
-            'offset': 0,
-            'size': 6
-        }]
-        
+        metadata = [
+            {
+                "original_index": 0,
+                "shape": torch.Size([2, 3]),
+                "dtype": torch.float32,
+                "group_index": 0,
+                "offset": 0,
+                "size": 6,
+            }
+        ]
+
         with pytest.raises(ValueError, match="Group 0 not found in metadata"):
             reconstruct_tensors_from_groups(tensor_groups, metadata)
 
@@ -347,29 +357,29 @@ class TestReconstructTensorsFromGroups:
         tensor1 = torch.randn(2, 3, 4, dtype=torch.float32)
         tensor2 = torch.randn(2, 3, 4, dtype=torch.float32)
         concatenated = torch.cat([tensor1, tensor2], dim=0)
-        
+
         tensor_groups = [concatenated]
         metadata = [
             {
-                'original_index': 0,
-                'shape': tensor1.shape,
-                'dtype': tensor1.dtype,
-                'group_index': 0,
-                'offset': 0,
-                'size': tensor1.numel()
+                "original_index": 0,
+                "shape": tensor1.shape,
+                "dtype": tensor1.dtype,
+                "group_index": 0,
+                "offset": 0,
+                "size": tensor1.numel(),
             },
             {
-                'original_index': 1,
-                'shape': tensor2.shape,
-                'dtype': tensor2.dtype,
-                'group_index': 0,
-                'offset': tensor1.numel(),
-                'size': tensor2.numel()
-            }
+                "original_index": 1,
+                "shape": tensor2.shape,
+                "dtype": tensor2.dtype,
+                "group_index": 0,
+                "offset": tensor1.numel(),
+                "size": tensor2.numel(),
+            },
         ]
-        
+
         result = reconstruct_tensors_from_groups(tensor_groups, metadata)
-        
+
         assert len(result) == 2
         assert torch.equal(result[0], tensor1)
         assert torch.equal(result[1], tensor2)
@@ -388,35 +398,41 @@ class TestIntegration:
             torch.randn(2, 3, dtype=torch.float32),
             torch.randn(4, 5, dtype=torch.float32),
             torch.randn(2, 3, dtype=torch.float64),
-            torch.randn(1, 1, dtype=torch.float32)
+            torch.randn(1, 1, dtype=torch.float32),
         ]
-        
+
         # Group the tensors
         tensor_groups, metadata = group_tensors_by_shape_and_dtype(tensors)
-        
+
         # Reconstruct the tensors
         reconstructed = reconstruct_tensors_from_groups(tensor_groups, metadata)
-        
+
         # Verify reconstruction
         assert len(reconstructed) == len(tensors)
-        for i, (original, reconstructed_tensor) in enumerate(zip(tensors, reconstructed)):
+        for i, (original, reconstructed_tensor) in enumerate(
+            zip(tensors, reconstructed)
+        ):
             assert torch.equal(original, reconstructed_tensor), f"Tensor {i} mismatch"
 
     def test_large_tensor_workflow(self):
         """Test workflow with tensors that exceed size limits."""
         # Create tensors that would exceed default size limit when grouped
-        tensors = [torch.randn(100, 100, dtype=torch.float32) for _ in range(100)]  # ~4MB total
+        tensors = [
+            torch.randn(100, 100, dtype=torch.float32) for _ in range(100)
+        ]  # ~4MB total
         # Set a small max_tensor_size to force splitting
         max_size = 100 * 1024  # 100KB
         tensor_groups, metadata = group_tensors_by_shape_and_dtype(tensors, max_size)
-        
+
         # Should create multiple groups
         assert len(tensor_groups) > 1
-        
+
         # Reconstruct and verify
         reconstructed = reconstruct_tensors_from_groups(tensor_groups, metadata)
         assert len(reconstructed) == len(tensors)
-        for i, (original, reconstructed_tensor) in enumerate(zip(tensors, reconstructed)):
+        for i, (original, reconstructed_tensor) in enumerate(
+            zip(tensors, reconstructed)
+        ):
             assert torch.equal(original, reconstructed_tensor), f"Tensor {i} mismatch"
 
     def test_different_dtypes_workflow(self):
@@ -425,13 +441,17 @@ class TestIntegration:
             torch.randn(2, 3, dtype=torch.float32),
             torch.randn(2, 3, dtype=torch.float64),
             torch.randn(2, 3, dtype=torch.float32),
-            torch.randn(2, 3, dtype=torch.float16)
+            torch.randn(2, 3, dtype=torch.float16),
         ]
-        
+
         tensor_groups, metadata = group_tensors_by_shape_and_dtype(tensors)
         reconstructed = reconstruct_tensors_from_groups(tensor_groups, metadata)
-        
+
         assert len(reconstructed) == len(tensors)
-        for i, (original, reconstructed_tensor) in enumerate(zip(tensors, reconstructed)):
+        for i, (original, reconstructed_tensor) in enumerate(
+            zip(tensors, reconstructed)
+        ):
             assert torch.equal(original, reconstructed_tensor), f"Tensor {i} mismatch"
-            assert original.dtype == reconstructed_tensor.dtype, f"Tensor {i} dtype mismatch"
+            assert original.dtype == reconstructed_tensor.dtype, (
+                f"Tensor {i} dtype mismatch"
+            )

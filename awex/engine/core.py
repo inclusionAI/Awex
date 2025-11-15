@@ -7,7 +7,6 @@ logger = logging.getLogger(__name__)
 
 
 class Engine(ABC):
-    
     def __init__(self, hf_config):
         self.global_step = -1
         self.hf_config = hf_config
@@ -16,7 +15,7 @@ class Engine(ABC):
     @abstractmethod
     def engine_name(self):
         pass
-    
+
     def hf_config(self):
         return self.hf_config
 
@@ -57,10 +56,9 @@ class InferenceEngine(Engine):
     def update_weights(self, **kwargs):
         """Update weights for inference engine."""
         pass
-    
+
 
 class TrainingEngine(Engine):
-
     @abstractmethod
     def save_hf_checkpoint(self, path: str):
         """Save model checkpoint."""

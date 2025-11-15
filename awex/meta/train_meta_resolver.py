@@ -7,7 +7,11 @@ from torch import distributed as dist
 from transformers import PretrainedConfig
 
 from awex.meta.meta_resolver import ParamMetaResolver, logger
-from awex.meta.weight_meta import dump_parameters_meta, compute_total_model_size, ParameterMeta
+from awex.meta.weight_meta import (
+    dump_parameters_meta,
+    compute_total_model_size,
+    ParameterMeta,
+)
 from awex.sharding.param_sharding import ShardingType
 from awex.sharding.rank_info import RankInfo
 from awex.util.common import to_dict
@@ -25,7 +29,11 @@ class McoreParamMetaResolver(ParamMetaResolver):
         self._train_backend = train_backend
         self._mcore_model = train_backend.model_engine
         self._model_arch_name = self.hf_config.architectures[0]
-        from awex.sharding.mcore_sharding import get_mcore_rank_info, get_mcore_sharding_strategy
+        from awex.sharding.mcore_sharding import (
+            get_mcore_rank_info,
+            get_mcore_sharding_strategy,
+        )
+
         self._rank_info = get_mcore_rank_info()
         self._sharding_strategy = get_mcore_sharding_strategy(
             self._model_arch_name,
@@ -85,6 +93,7 @@ class McoreParamMetaResolver(ParamMetaResolver):
     ) -> List[Dict[str, Any]]:
         params_meta = []
         from awex.sharding.mcore_sharding import get_mcore_rank_info
+
         rank_info = get_mcore_rank_info()
         meta = {
             "rank_info": rank_info,
@@ -93,9 +102,9 @@ class McoreParamMetaResolver(ParamMetaResolver):
         }
         from awex.converter.mcore_converter import get_mcore_model_parameters
 
-        mcore_to_hf_weight_converter = get_train_weights_converter(self._train_backend.engine_name)(
-            self._model_arch_name, self.hf_config, self._rank_info, self._infer_conf
-        )
+        mcore_to_hf_weight_converter = get_train_weights_converter(
+            self._train_backend.engine_name
+        )(self._model_arch_name, self.hf_config, self._rank_info, self._infer_conf)
         for model in self._mcore_model:
             params_dict = get_mcore_model_parameters(model)
             for name, param in params_dict.items():

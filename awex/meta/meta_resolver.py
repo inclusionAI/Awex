@@ -3,13 +3,18 @@ from collections import defaultdict
 from awex import logging
 from typing import Any, Dict, List, Tuple
 
-from awex.meta.weight_meta import ParameterMeta, ParameterShardMeta, ParameterReplicaMeta
+from awex.meta.weight_meta import (
+    ParameterMeta,
+    ParameterShardMeta,
+    ParameterReplicaMeta,
+)
 from awex.sharding.param_sharding import (
     ShardingType,
 )
 from awex.sharding.rank_info import RankInfo
 
 logger = logging.getLogger(__name__)
+
 
 class ParamMetaResolver(ABC):
     """

@@ -34,7 +34,7 @@ class BailingMoeShardingStrategy(ShardingStrategy):
 
 class McoreToHFWeightConverterBailingMoe(McoreToHFWeightConverter):
     def __init__(
-            self, hf_config: PretrainedConfig, rank_info: RankInfo, infer_conf: Dict
+        self, hf_config: PretrainedConfig, rank_info: RankInfo, infer_conf: Dict
     ):
         super().__init__(hf_config, rank_info, infer_conf)
         self.quantization_config = getattr(hf_config, "quantization_config", {})
@@ -59,7 +59,7 @@ class McoreToHFWeightConverterBailingMoe(McoreToHFWeightConverter):
         return False
 
     def convert_param(
-            self, name: str, parameter: torch.Tensor
+        self, name: str, parameter: torch.Tensor
     ) -> List[Tuple[str, torch.Tensor]]:
         super_converted_params = super().convert_param(name, parameter)
         if not self.quant_method:
@@ -77,9 +77,9 @@ class McoreToHFWeightConverterBailingMoe(McoreToHFWeightConverter):
                     if fp8_key == "attention.dense.weight":
                         scale_ue8m0 = True
                     if (
-                            ".experts." in param_name
-                            and "_proj.weight" in fp8_key
-                            and "down_proj" not in fp8_key
+                        ".experts." in param_name
+                        and "_proj.weight" in fp8_key
+                        and "down_proj" not in fp8_key
                     ):
                         scale_ue8m0 = True
                     break

@@ -1,12 +1,10 @@
-from awex from awex import logging
+from awex import logging
 from typing import List
 
 from awex.reader.weights_reader import WorkerWeightsReader
-from awex.sharding.param_sharding import (
-    get_sglang_rank_info,
-)
 
 logger = logging.getLogger(__name__)
+
 
 class AStateWorkerWeightsReader(WorkerWeightsReader):
     def initialize(self):

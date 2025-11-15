@@ -8,6 +8,7 @@ def get_sglang_sharding_strategy(
     Get the sharding strategy class for a given model architecture name.
     """
     from awex.models import get_sharding_strategy
+
     cls = get_sharding_strategy(model_name)
     return cls(
         engine_name="sglang",
@@ -35,7 +36,10 @@ def get_sglang_rank_info(model_context, engine_rank) -> RankInfo:
     if (
         infer_engine_config.enable_ep_moe
         or infer_engine_config.enable_deepep_moe
-        or (hasattr(infer_engine_config, "enable_pplx_moe") and infer_engine_config.enable_pplx_moe)
+        or (
+            hasattr(infer_engine_config, "enable_pplx_moe")
+            and infer_engine_config.enable_pplx_moe
+        )
     ):
         assert ep_size == tp_size, "ep_size must be equal to tp_size"
         ep_rank = tp_rank
@@ -64,4 +68,3 @@ def get_sglang_rank_info(model_context, engine_rank) -> RankInfo:
         local_rank=model_context["local_rank"],
         is_infer=True,
     )
-

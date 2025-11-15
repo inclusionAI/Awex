@@ -17,8 +17,7 @@
 
 import pytest
 import torch
-from typing import List, Dict, Tuple
-from dataclasses import dataclass
+from typing import Tuple
 
 from awex.transfer.transfer_plan import (
     TransferPlanBuilder,
@@ -99,7 +98,9 @@ class TestTransferPlanBuilder:
         replica = ParameterReplicaMeta(shards=[])
 
         with pytest.raises(IndexError):
-            builder._create_shard_offset_for_replica(replica, engine_rank=0, is_infer=True)
+            builder._create_shard_offset_for_replica(
+                replica, engine_rank=0, is_infer=True
+            )
 
     def test_create_shard_offset_for_replica_empty_global_offset(self):
         """Test _create_shard_offset_for_replica with empty global_offset."""
@@ -108,18 +109,23 @@ class TestTransferPlanBuilder:
         replica = ParameterReplicaMeta(shards=[shard])
 
         with pytest.raises(ValueError, match="Shard has empty global_offset"):
-            builder._create_shard_offset_for_replica(replica, engine_rank=0, is_infer=True)
+            builder._create_shard_offset_for_replica(
+                replica, engine_rank=0, is_infer=True
+            )
 
     def test_create_shard_offset_for_replica_dimension_mismatch(self):
         """Test _create_shard_offset_for_replica with dimension mismatch."""
         builder = TransferPlanBuilder(infer_world_size=2, train_world_size=1)
         shard = self._create_test_shard_meta(
-            global_offset=(0, 0), shape=(2, 3, 4)  # 3D shape with 2D offset
+            global_offset=(0, 0),
+            shape=(2, 3, 4),  # 3D shape with 2D offset
         )
         replica = ParameterReplicaMeta(shards=[shard])
 
         with pytest.raises(ValueError, match="Dimension mismatch"):
-            builder._create_shard_offset_for_replica(replica, engine_rank=0, is_infer=True)
+            builder._create_shard_offset_for_replica(
+                replica, engine_rank=0, is_infer=True
+            )
 
     def test_create_shard_offset_for_replica_valid_inference(self):
         """Test _create_shard_offset_for_replica with valid inference shard."""
@@ -131,7 +137,9 @@ class TestTransferPlanBuilder:
         )
         replica = ParameterReplicaMeta(shards=[shard])
 
-        result = builder._create_shard_offset_for_replica(replica, engine_rank=1, is_infer=True)
+        result = builder._create_shard_offset_for_replica(
+            replica, engine_rank=1, is_infer=True
+        )
 
         assert len(result) == 1
         shard_info = result[0]
@@ -203,8 +211,6 @@ class TestTransferPlanBuilder:
 
     def test_create_slice_function(self):
         """Test _create_slice_function creates correct slicing function."""
-        builder = TransferPlanBuilder(infer_world_size=2, train_world_size=1)
-
         source_offset = (1, 2)
         overlap_shape = (2, 3)
         inference_meta = self._create_test_parameter_meta("param1")
@@ -242,18 +248,14 @@ class TestTransferPlanBuilder:
 
         region = OverlapRegion(
             inference_shard=ShardOffset(
-                shard=self._create_test_shard_meta(
-                    global_offset=(0, 0), shape=(3, 3)
-                ),
+                shard=self._create_test_shard_meta(global_offset=(0, 0), shape=(3, 3)),
                 start_offset=(0, 0),
                 end_offset=(3, 3),
                 shape=(3, 3),
                 rank=0,
             ),
             training_shard=ShardOffset(
-                shard=self._create_test_shard_meta(
-                    global_offset=(1, 1), shape=(3, 3)
-                ),
+                shard=self._create_test_shard_meta(global_offset=(1, 1), shape=(3, 3)),
                 start_offset=(1, 1),
                 end_offset=(4, 4),
                 shape=(3, 3),

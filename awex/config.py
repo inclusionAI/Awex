@@ -7,6 +7,7 @@ class InferenceConfig:
     """
     Configuration for inference.
     """
+
     model_path: Optional[str] = None
     # Other runtime options
     tp_size: Optional[int] = None

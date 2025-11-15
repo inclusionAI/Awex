@@ -19,7 +19,8 @@ from awex.sharding.param_sharding import (
 )
 from awex.util.common import (
     compute_statistics,
-    check_train_infer_params_meta, simple_hg_config,
+    check_train_infer_params_meta,
+    simple_hg_config,
 )
 from awex.util.common import stripped_env_vars
 from awex.util.tensor_util import (
@@ -195,9 +196,11 @@ class WeightsExchangeShardingReader(WeightExchangeReader):
         training_params_meta = pickle.loads(training_params_meta_bytes)
         if weights_comm_backend == "nccl":
             from awex.reader.nccl_reader import NCCLWorkerWeightsReader
+
             cls = NCCLWorkerWeightsReader
         elif weights_comm_backend == "astate":
             from awex.reader.astate_reader import AStateWorkerWeightsReader
+
             cls = AStateWorkerWeightsReader
         scheduler._asystem_weights_reader = cls(
             model,
@@ -562,7 +565,9 @@ class WorkerWeightsReader:
         self.infer_instance_world_size = parameters_meta[0].shards[0].world_size
         self.infer_world_size = num_engines * self.infer_instance_world_size
         self.transfer_world_size = self.training_world_size + self.infer_world_size
-        self.rank_info = get_rank_info_extractor(engine_name)(model_context, engine_rank)
+        self.rank_info = get_rank_info_extractor(engine_name)(
+            model_context, engine_rank
+        )
         logger.info(f"Reader rank info: {self.rank_info}")
         self.transfer_rank = (
             +self.engine_rank * self.infer_instance_world_size

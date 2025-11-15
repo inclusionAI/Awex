@@ -39,6 +39,8 @@ def print_current_gpu_status(stage):
     reserved = torch.cuda.memory_reserved()
     mem_free, mem_total = torch.cuda.mem_get_info()
     occupy = mem_total - mem_free
-    logger.info(f"Device gpu memory status for [{stage}]: torch allocated {pretty_bytes(allocated)}, "
-                f"torch reserved {pretty_bytes(reserved)} "
-                f"device mem_free {pretty_bytes(mem_free)}, device occupy {pretty_bytes(occupy)}")
+    logger.info(
+        f"Device gpu memory status for [{stage}]: torch allocated {pretty_bytes(allocated)}, "
+        f"torch reserved {pretty_bytes(reserved)} "
+        f"device mem_free {pretty_bytes(mem_free)}, device occupy {pretty_bytes(occupy)}"
+    )

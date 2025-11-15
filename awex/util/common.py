@@ -34,7 +34,6 @@ def divide(numerator, denominator):
     return numerator // denominator
 
 
-
 def get_ip_address():
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -104,8 +103,6 @@ def to_dict(param_meta, ignore_keys=None) -> dict:
 def to_json(param_meta, ignore_keys=None) -> str:
     """Convert the parameter meta to a json string."""
     return json.dumps(to_dict(param_meta, ignore_keys), indent=2)
-
-
 
 
 def compute_statistics(stage_history: dict, step_id: int, duration: float, stage: str):
@@ -178,12 +175,11 @@ def check_train_infer_params_meta(
                 logger.error(error_msg)
 
 
-
 def pretty_bytes(size_bytes):
     if size_bytes == 0:
         return "0B"
 
-    units = ['B', 'KB', 'MB', 'GB', 'TB']
+    units = ["B", "KB", "MB", "GB", "TB"]
     index = int(math.floor(math.log(size_bytes, 1024)))
     power = math.pow(1024, index)
 
@@ -201,9 +197,9 @@ def stripped_env_vars():
     return vars
 
 
-
 class AttrDict(dict):
     """Dictionary that allows attribute-style access."""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # Ensure that attributes refer to dictionary keys

@@ -14,20 +14,20 @@ logger = logging.getLogger(__name__)
 
 
 class MegatronEngine(TrainingEngine):
-    
     def __init__(self, config: Dict[str, Any]):
         super(MegatronEngine, self).__init__()
         self.config = config
         logger.info(f"config {self.config}")
-        self.enable_colocate_mode = (self.config.get("enable_colocate_mode", False)
-                                     or self.config.pop('enable_colocate_mode', False))
-        self.enable_debug_mode = self.config.get(
-            "enable_debug_mode", False
-        )
+        self.enable_colocate_mode = self.config.get(
+            "enable_colocate_mode", False
+        ) or self.config.pop("enable_colocate_mode", False)
+        self.enable_debug_mode = self.config.get("enable_debug_mode", False)
         self.weights_exchange_comm_backend = self.config.get(
             "weights_exchange_comm_backend", "file"
         )
-        self.enable_forward_share_gpu = self.config.get('enable_forward_share_gpu', False)
+        self.enable_forward_share_gpu = self.config.get(
+            "enable_forward_share_gpu", False
+        )
         self.meta_server_addr = self.config.get("meta_server_addr", "")
         os.environ["AWEX_META_SERVER_ADDR"] = self.meta_server_addr or ""
         ip, port = (self.meta_server_addr or ":").split(":")
@@ -53,11 +53,15 @@ class MegatronEngine(TrainingEngine):
         raise NotImplementedError
 
     def write_weights(self, **kwargs):
-        logger.info(f"Start to write weights for step {self.global_step} for rank {dist.get_rank()}")
+        logger.info(
+            f"Start to write weights for step {self.global_step} for rank {dist.get_rank()}"
+        )
         start_time = time.time()
         self.weights_exchange_writer.write_weights(step_id=self.global_step, **kwargs)
         duration = time.time() - start_time
-        logger.info(f"Finished writing weights for step {self.global_step} for rank {dist.get_rank()}, took {duration:.3f} seconds")
+        logger.info(
+            f"Finished writing weights for step {self.global_step} for rank {dist.get_rank()}, took {duration:.3f} seconds"
+        )
         if self.enable_colocate_mode:
             self.release_memory_occupation()
 

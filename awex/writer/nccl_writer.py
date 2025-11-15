@@ -304,4 +304,3 @@ def nccl_build_send_ops(parameters, transfer_plan, weights_update_group, copy_ra
         for rank in finished_ranks:
             unfinished_ranks.remove(rank)
     return p2p_op_list, copy_op_list
-

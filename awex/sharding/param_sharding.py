@@ -1,6 +1,5 @@
 from enum import Enum
 from awex import logging
-from typing import Callable
 
 from awex.sharding.rank_info import RankInfo
 
@@ -157,20 +156,6 @@ class ShardingStrategy:
         else:
             return self.get_expert_sharding_strategy(parameter_name, **kwargs)
 
-    def get_shared_expert_sharding_strategy(self, parameter_name, **kwargs):
-        """
-        Determine sharding strategy for shared expert parameters.
-        Returns (ShardingType, num_shards).
-        """
-        if self.engine_name == "mcore":
-            sharding_dim = get_default_sharding_dim(parameter_name)
-            if self.tp_size > 1:
-                return ShardingType.TP_SHARDING, sharding_dim, self.tp_size
-            else:
-                return ShardingType.NO_SHARDING, sharding_dim, 1
-        else:
-            return self.get_expert_sharding_strategy(parameter_name, **kwargs)
-
     def get_expert_sharding_strategy(self, parameter_name, **kwargs):
         """
         Determine sharding strategy for expert model parameters.
@@ -244,9 +229,11 @@ class ShardingStrategy:
 def get_sharding_strategy_builder(engine_name: str):
     if engine_name == "sglang":
         from awex.sharding.sglang_sharding import get_sglang_sharding_strategy
+
         return get_sglang_sharding_strategy
     if engine_name == "mcore":
         from awex.sharding.mcore_sharding import get_mcore_sharding_strategy
+
         return get_mcore_sharding_strategy
     raise ValueError(f"Unknown engine_name {engine_name}")
 
@@ -254,8 +241,10 @@ def get_sharding_strategy_builder(engine_name: str):
 def get_rank_info_extractor(engine_name: str):
     if engine_name == "sglang":
         from awex.sharding.sglang_sharding import get_sglang_rank_info
+
         return get_sglang_rank_info
     if engine_name == "mcore":
         from awex.sharding.mcore_sharding import get_mcore_rank_info
+
         return get_mcore_rank_info
     raise ValueError(f"Unknown engine_name {engine_name}")
