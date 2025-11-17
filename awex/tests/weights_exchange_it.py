@@ -30,7 +30,7 @@ from awex import logging
 from awex.engine.mcore import MegatronEngine
 from awex.engine.sglang import SGlangEngine
 from awex.meta.meta_server import start_meta_server
-from awex.tests.test_utils import simple_torch_model
+from awex.tests.test_utils import megatron_model_from_hf
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ enable_debug_mode = False
 
 tp_size = 1
 lite_inference_config = {
-    "model_path": ".models/moe_lite",
+    "model_path": "Qwen/Qwen2-1.5B",
     "tokenizer_path": ".models/moe_lite",
     "tokenizer_mode": "auto",
     "skip_tokenizer_init": True,
@@ -201,7 +201,7 @@ class WeightsExchangeIT:
         # TODO mpu.initialize_model_parallel
         # TODO initialize_rerun_state_machine
         # TODO load model and create optimizer
-        model, hf_config = simple_torch_model()
+        model, hf_config = megatron_model_from_hf()
         return model, hf_config
 
     def exchange_weights(self):

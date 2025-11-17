@@ -1,7 +1,6 @@
 import json
 import pytest
 import torch
-import os
 from unittest.mock import MagicMock
 
 from awex.meta.meta_resolver import (
@@ -569,11 +568,7 @@ def test_dp_tp_sharding_offsets():
 )
 def test_meta_resolver_with_real_engine():
     # Check if model exists locally or can be downloaded
-    model_path = os.environ.get("DEEPSEEK_R1_DISTILL_QWEN_1_5B_PATH", MODEL_PATH)
-    if not os.path.exists(model_path):
-        pytest.skip(
-            f"Model path {model_path} does not exist. Set DEEPSEEK_R1_DISTILL_QWEN_1_5B_PATH env var if needed."
-        )
+    model_path = "Qwen/Qwen2-1.5B"
     config = create_real_engine_config(model_path)
     from awex.engine.sglang import SGlangEngine, extract_sgl_config
     import sglang as sgl
@@ -604,12 +599,8 @@ def test_meta_resolver_with_real_engine():
             assert all(isinstance(s, ParameterShardMeta) for s in replica.shards)
 
 
-@pytest.mark.skipif(
-    not os.path.exists(".models/moe_lite_4layers") or torch.cuda.device_count() < 4,
-    reason="Bailing Lite MoE model not available or only one GPU present",
-)
 def test_meta_resolver_lite():
-    model_path = ".models/moe_lite_4layers"
+    model_path = "Qwen/Qwen2-1.5B"
     config = create_real_engine_config(model_path, tp_size=4)
     from awex.engine.sglang import SGlangEngine
     import sglang as sgl

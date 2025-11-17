@@ -77,7 +77,7 @@ class FileWeightExchangeReader(WeightExchangeReader):
         )
 
 
-class WeightsExchangeShardingReader(WeightExchangeReader):
+class WeightsReader(WeightExchangeReader):
     parameters_meta: List[ParameterMeta]
 
     def __init__(self, meta_resolver: InferParamMetaResolver, inference_engine):
@@ -701,4 +701,4 @@ def get_weights_exchange_reader(inference_engine) -> WeightExchangeReader:
         engine_rank=inference_engine.engine_rank,
         convert_params=True,
     )
-    return WeightsExchangeShardingReader(meta_resolver, inference_engine)
+    return WeightsReader(meta_resolver, inference_engine)

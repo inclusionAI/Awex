@@ -27,7 +27,7 @@ import time
 from awex.config import InferenceConfig
 from awex.meta.meta_server import start_meta_server
 from awex.meta.meta_server import MetaServerClient
-from awex.tests.test_utils import simple_torch_model
+from awex.tests.test_utils import megatron_model_from_hf
 from awex.transfer.transfer_plan import TransferPlanBuilder, slice_tensor
 from awex.util.process_group import (
     init_weights_update_group,
@@ -60,7 +60,7 @@ def create_mocked_mcore_engine():
     }
     from awex.engine.mcore import MegatronEngine
 
-    model, hf_config = simple_torch_model()
+    model, hf_config = megatron_model_from_hf()
     return MegatronEngine(config, hf_config, model)
 
 

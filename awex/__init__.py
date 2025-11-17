@@ -14,3 +14,9 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+
+from awex.writer.nccl_writer import NCCLWeightsWriter
+from awex.reader.weights_reader import WeightsReader
+from awex.reader.nccl_reader import NCCLWorkerWeightsReader
+
+__all__ = ["NCCLWeightsWriter", "WeightsReader", "NCCLWorkerWeightsReader"]
