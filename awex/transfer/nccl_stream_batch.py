@@ -57,7 +57,6 @@ class NcclColocateStreamBatchTransport:
         send_parameters,
         recv_parameters,
         *,
-        stream=True,
         step_id=-1,
         **kwargs,
     ):
@@ -145,8 +144,9 @@ class NcclColocateStreamBatchTransport:
         hang_detector.submit(detect_hang, future, msg, [], timeout=60)
 
         # Execute recursive partition transfer
-        func = self.execute_recursive_partition_stream_transfer if stream else execute_recursive_partition_transfer
-        func(
+        # FIXME: batch_isend_irecv hang sometimes, seems `batch_isend_irecv` can't handle asymmetric p2p communication.
+        # so we use send/recv directly
+        self.execute_recursive_partition_stream_transfer(
             transfer_rank,
             world_size,
             all_send_p2p_ops,
@@ -301,121 +301,3 @@ class NcclColocateStreamBatchTransport:
                     total_ops += 1
 
         return total_ops
-
-
-def execute_recursive_partition_transfer(
-    transfer_rank,
-    world_size,
-    all_send_p2p_ops,  # Dict[peer_rank] -> List[(plan_op, p2p_op)]
-    all_recv_p2p_ops,  # Dict[peer_rank] -> List[(plan_op, p2p_op)]
-    weights_update_group,
-    rank_coordinate,
-    step_id,
-):
-    """
-    Execute P2P transfer using recursive partition algorithm with `batch_isend_irecv`.
-    FIXME: It hang sometimes, seems `batch_isend_irecv` can't handle asymmetric p2p communication.
-    """
-    num_rounds = int(math.log2(world_size))
-    dist.barrier(group=weights_update_group, device_ids=[torch.cuda.current_device()])
-    logger.info(f"[{os.getpid()}] Starting recursive partition transfer with {num_rounds} rounds for {rank_coordinate}")
-
-    for round_idx in range(num_rounds):
-        partition_size = world_size // (2 ** round_idx)
-        half = partition_size // 2
-
-        # Determine my partition base (which partition I'm in)
-        partition_base = (transfer_rank // partition_size) * partition_size
-        partition_end = partition_base + partition_size
-        offset_in_partition = transfer_rank - partition_base
-
-        # Determine if I'm in first half or second half of my partition
-        in_first_half = offset_in_partition < half
-
-        # Determine the range of ranks in the other half
-        if in_first_half:
-            other_half_start = partition_base + half
-            other_half_end = partition_end
-        else:
-            other_half_start = partition_base
-            other_half_end = partition_base + half
-
-        logger.info(f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx}: partition_size={partition_size}, "
-                   f"partition=[{partition_base}, {partition_end}), half={half}, "
-                   f"in_first_half={in_first_half}, other_half=[{other_half_start}, {other_half_end})")
-
-        round_start = time.time()
-
-        # === PHASE 1: First half sends to second half, second half receives from first half ===
-        # In colocate mode, all ranks are in the SAME NCCL group, so we need to call
-        # batch_isend_irecv with BOTH sends and recvs together (not separately)
-        phase1_ops = []
-        if in_first_half:
-            # Collect all send operations to ranks in the other half
-            for peer_rank in range(other_half_start, other_half_end):
-                if peer_rank in all_send_p2p_ops:
-                    for plan_op, p2p_op in all_send_p2p_ops[peer_rank]:
-                        phase1_ops.append(p2p_op)
-        else:
-            # Collect all recv operations from ranks in the other half
-            for peer_rank in range(other_half_start, other_half_end):
-                if peer_rank in all_recv_p2p_ops:
-                    for plan_op, p2p_op in all_recv_p2p_ops[peer_rank]:
-                        phase1_ops.append(p2p_op)
-
-        # All ranks call batch_isend_irecv together (some with sends, some with recvs)
-        # IMPORTANT: ALL ranks must call batch_isend_irecv, even if they have no operations
-        # Otherwise, sends from ranks with operations won't match with receives from ranks without
-        logger.info(f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} Phase 1: executing {len(phase1_ops)} "
-                   f"{'sends' if in_first_half else 'recvs'}")
-        reqs = dist.batch_isend_irecv(phase1_ops)
-        for req in reqs:
-            req.wait()
-        logger.info(f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} Phase 1: completed {len(phase1_ops)} ops")
-
-        # MUST synchronize before barrier to ensure CUDA operations complete
-        torch.cuda.synchronize()
-        # Barrier to ensure all ranks complete Phase 1 before starting Phase 2
-        dist.barrier(group=weights_update_group, device_ids=[torch.cuda.current_device()])
-        logger.info(f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} Phase 1: barrier passed")
-
-        # === PHASE 2: First half receives from second half, second half sends to first half ===
-        phase2_ops = []
-        if in_first_half:
-            # Collect all recv operations from ranks in the other half
-            for peer_rank in range(other_half_start, other_half_end):
-                if peer_rank in all_recv_p2p_ops:
-                    for plan_op, p2p_op in all_recv_p2p_ops[peer_rank]:
-                        phase2_ops.append(p2p_op)
-        else:
-            # Collect all send operations to ranks in the other half
-            for peer_rank in range(other_half_start, other_half_end):
-                if peer_rank in all_send_p2p_ops:
-                    for plan_op, p2p_op in all_send_p2p_ops[peer_rank]:
-                        phase2_ops.append(p2p_op)
-
-        # All ranks call batch_isend_irecv together (some with recvs, some with sends)
-        # IMPORTANT: ALL ranks must call batch_isend_irecv, even if they have no operations
-        logger.info(f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} Phase 2: executing {len(phase2_ops)} "
-                   f"{'recvs' if in_first_half else 'sends'}")
-        reqs = dist.batch_isend_irecv(phase2_ops)
-        for req in reqs:
-            req.wait()
-        logger.info(f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} Phase 2: completed {len(phase2_ops)} ops")
-
-        # MUST synchronize before barrier to ensure CUDA operations complete
-        torch.cuda.synchronize()
-        # Barrier to ensure all ranks complete Phase 2 before next round
-        dist.barrier(group=weights_update_group, device_ids=[torch.cuda.current_device()])
-        logger.info(f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} Phase 2: barrier passed")
-
-        round_duration = time.time() - round_start
-        logger.info(f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} completed: "
-                   f"phase1={len(phase1_ops)} ops, phase2={len(phase2_ops)} ops, "
-                   f"took {round_duration:.4f}s")
-
-    logger.info(f"[{os.getpid()}] [{rank_coordinate}] All {num_rounds} rounds completed for {rank_coordinate}")
-
-    # Final barrier to ensure all ranks complete before proceeding
-    dist.barrier(group=weights_update_group, device_ids=[torch.cuda.current_device()])
-    logger.info(f"[{os.getpid()}] [{rank_coordinate}] Final barrier passed for {rank_coordinate}")
