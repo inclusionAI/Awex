@@ -70,6 +70,7 @@ def create_mocked_mcore_engine():
 )
 def test_weights_writer():
     mcore_engine = create_mocked_mcore_engine()
+    mcore_engine.initialize()
     weights_writer = mcore_engine.weights_exchange_writer
     print(f"backend.meta_server_addr: {mcore_engine.meta_server_addr}")
     meta_server_client = MetaServerClient(*mcore_engine.meta_server_addr.split(":"))
