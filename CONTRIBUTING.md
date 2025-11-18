@@ -28,6 +28,14 @@ For environmental requirements, please check [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ### Python
 
+Install test dependencies:
+
+```bash
+pip install -e ".[dev]"
+```
+
+Run tests:
+
 ```bash
 pytest -v -s .
 ```
@@ -44,12 +52,17 @@ docker run --rm -v $(pwd):/github/workspace ghcr.io/korandoru/hawkeye-native:v3 
 
 ### Python
 
+Install formatting tools:
+
 ```bash
-cd python
-# install dependencies for formatting
 pip install ruff
-# format python code
-ruff format
+```
+
+Format Python code:
+
+```bash
+ruff format .
+ruff check --fix .
 ```
 
 ### Markdown

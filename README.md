@@ -24,6 +24,11 @@ TODO
 
 ## 📦 Installation
 
+### Requirements
+
+- Python 3.8 or higher
+- PyTorch 2.0.0 or higher (for GPU support)
+
 ### Basic Installation
 
 Install awex using pip:
@@ -32,10 +37,20 @@ Install awex using pip:
 pip install awex
 ```
 
-Install awex from source:
+### Build from Source
+
+Clone the repository and install in development mode:
 
 ```bash
 git clone git@github.com:inclusionAI/awex.git
+cd awex
+pip install -e .
+```
+
+For development with additional tools:
+
+```bash
+pip install -e ".[dev]"
 ```
 
 ## Quick Start
@@ -59,19 +74,21 @@ Awex is an open-source project. We welcome all forms of contributions:
 git clone https://github.com/inclusionAI/awex.git
 cd awex
 
-# Install dependencies
+# Install in development mode with dev dependencies
 pip install -e ".[dev]"
 
 # Run tests
 pytest -v -s .
 
 # Run specific test
-pytest -v -s awex/tests/test_weights_exchange.py
+pytest -v -s awex/tests/test_meta_resolver.py
 
 # Format code
 ruff format .
 ruff check --fix .
 ```
+
+See [DEVELOPMENT.md](DEVELOPMENT.md) for detailed build instructions.
 
 ## 📄 License
 
