@@ -70,6 +70,11 @@ def create_mocked_mcore_engine():
 )
 def test_weights_writer():
     mcore_engine = create_mocked_mcore_engine()
+
+    # Initialize process group for the writer side
+    torch.cuda.set_device(1)
+    init_process_group(0, 1, get_free_port())
+
     mcore_engine.initialize()
     weights_writer = mcore_engine.weights_exchange_writer
     print(f"backend.meta_server_addr: {mcore_engine.meta_server_addr}")
@@ -120,6 +125,10 @@ def test_weights_writer():
 
     # Wait for the reader process to finish
     p.kill()
+
+    # Clean up process group
+    dist.destroy_process_group()
+
     os.environ.clear()
     os.environ.update(_env_backup)
 
