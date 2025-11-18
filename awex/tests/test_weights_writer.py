@@ -75,6 +75,13 @@ def test_weights_writer():
     torch.cuda.set_device(1)
     init_process_group(0, 1, get_free_port())
 
+    # Initialize Megatron parallel state
+    from megatron.core import parallel_state as mpu
+    mpu.initialize_model_parallel(
+        tensor_model_parallel_size=1,
+        pipeline_model_parallel_size=1,
+    )
+
     mcore_engine.initialize()
     weights_writer = mcore_engine.weights_exchange_writer
     print(f"backend.meta_server_addr: {mcore_engine.meta_server_addr}")

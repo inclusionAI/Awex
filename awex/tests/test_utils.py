@@ -57,26 +57,31 @@ def setup_modelscope_cache():
 
 def megatron_model_from_hf(
     model_path: str = "Qwen/Qwen2-1.5B",
-) -> Tuple[torch.nn.Module, PretrainedConfig]:
+) -> Tuple[list, PretrainedConfig]:
     """
-    Load model from HuggingFace and prepare it for Megatron-style weight conversion.
+    Convert HuggingFace model to DCP format and load into Megatron.
 
-    This is a simple approach that:
-    1. Loads model using HuggingFace transformers (no Megatron initialization)
-    2. Returns model with state_dict that can be converted to Megatron format
-    3. Attaches converter function for use with awex/converter/mcore_converter.py
+    This function:
+    1. Downloads HuggingFace model if needed
+    2. Converts HF weights to Megatron DCP format using convert.py
+    3. Initializes Megatron model with TP=PP=DP=EP=CP=1
+    4. Loads the DCP checkpoint into Megatron model
+    5. Returns Megatron model list and HF config
 
     Args:
         model_path: HuggingFace model path (default: Qwen/Qwen2-1.5B)
 
     Returns:
-        Tuple of (hf_model, hf_config)
-        The model has attached converter: model.convert_to_megatron_state_dict()
+        Tuple of ([megatron_model], hf_config)
+        The model is a real Megatron GPT model wrapped in a list for VPP support
 
     Note:
-        This function does NOT initialize Megatron. It only loads HF model.
-        For testing weights exchange between Megatron and SGLang.
+        This creates a temporary DCP checkpoint in /tmp/megatron_dcp_<model_name>
     """
+    import sys
+    import tempfile
+    import subprocess
+
     # Detect network and use appropriate source
     use_modelscope = False
     if not is_huggingface_available():
@@ -102,45 +107,191 @@ def megatron_model_from_hf(
             from modelscope import snapshot_download
             local_model_path = snapshot_download(model_path_for_download, cache_dir=os.path.expanduser("~/.cache/modelscope"))
             print(f"Model downloaded to: {local_model_path}")
-            model_path = local_model_path
+            hf_model_dir = local_model_path
         except Exception as e:
             print(f"Failed to download from ModelScope: {e}")
             print("Falling back to HuggingFace (may fail if not accessible)...")
+            hf_model_dir = model_path
+    else:
+        # Download from HuggingFace
+        from transformers import AutoModelForCausalLM
+        print(f"Downloading {model_path} from HuggingFace...")
+        AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True)
+        hf_model_dir = model_path
 
     # Load config
     hf_config = AutoConfig.from_pretrained(
-        model_path,
+        hf_model_dir,
         trust_remote_code=True,
     )
 
-    print("Config loaded:")
+    print("HF Config loaded:")
     print(f"  Model type: {hf_config.model_type}")
     print(f"  Hidden size: {hf_config.hidden_size}")
     print(f"  Num layers: {hf_config.num_hidden_layers}")
     print(f"  Num attention heads: {hf_config.num_attention_heads}")
-    print(
-        f"  Num KV heads: {getattr(hf_config, 'num_key_value_heads', hf_config.num_attention_heads)}"
-    )
+    print(f"  Num KV heads: {getattr(hf_config, 'num_key_value_heads', hf_config.num_attention_heads)}")
     print(f"  Vocab size: {hf_config.vocab_size}")
 
-    # Load model
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        config=hf_config,
-        trust_remote_code=True,
-        torch_dtype=torch.bfloat16,
-        device_map=None,  # Load to CPU (no GPU required)
-    )
+    # Create temporary directory for DCP checkpoint
+    model_name = model_path.split("/")[-1]
+    dcp_dir = f"/tmp/megatron_dcp_{model_name}"
+    os.makedirs(dcp_dir, exist_ok=True)
 
-    model = model.cpu()
+    print(f"\nConverting HF weights to Megatron DCP format...")
+    print(f"  Source: {hf_model_dir}")
+    print(f"  Target: {dcp_dir}")
 
-    print("Model loaded successfully:")
-    print(f"  Model class: {type(model).__name__}")
-    print(f"  Number of parameters: {sum(p.numel() for p in model.parameters()):,}")
+    # Check if checkpoint already exists to skip conversion
+    if os.path.exists(f"{dcp_dir}/iter_0000001") or os.path.exists(f"{dcp_dir}/latest_checkpointed_iteration.txt"):
+        print(f"DCP checkpoint already exists at {dcp_dir}, skipping conversion")
+    else:
+        # Find convert.py in Megatron-LM (assume it's on Python path)
+        try:
+            import megatron.training
+            # Try to get the path from a submodule that has __file__
+            megatron_module_path = megatron.training.__file__
+            if megatron_module_path:
+                # Go up from megatron/training/__init__.py to Megatron-LM root
+                megatron_root = os.path.dirname(os.path.dirname(os.path.dirname(megatron_module_path)))
+            else:
+                raise RuntimeError("Cannot determine Megatron-LM path from module")
+        except Exception as e:
+            raise RuntimeError(
+                f"Cannot find Megatron-LM installation: {e}. "
+                "Please ensure Megatron-LM is properly installed and on PYTHONPATH."
+            )
 
-    # Attach converter function to model
-    model = convert_hf_to_megatron_state_dict(model, hf_config)
-    return model, hf_config
+        convert_script = f"{megatron_root}/tools/checkpoint/convert.py"
+
+        if not os.path.exists(convert_script):
+            raise RuntimeError(
+                f"Cannot find Megatron conversion script at {convert_script}. "
+                "Please ensure Megatron-LM is properly installed."
+            )
+
+        print(f"Using Megatron-LM from: {megatron_root}")
+
+        # Determine tokenizer model path
+        tokenizer_model = f"{hf_model_dir}/tokenizer.model" if os.path.exists(f"{hf_model_dir}/tokenizer.model") else hf_model_dir
+
+        convert_cmd = [
+            sys.executable, convert_script,
+            "--model-type", "GPT",
+            "--loader", "llama_mistral",
+            "--saver", "core",
+            "--model-size", "qwen2.5",
+            "--checkpoint-type", "hf",
+            "--load-dir", hf_model_dir,
+            "--save-dir", dcp_dir,
+            "--tokenizer-model", tokenizer_model,
+            "--target-tensor-parallel-size", "1",
+            "--target-pipeline-parallel-size", "1",
+            "--bf16",
+        ]
+
+        print(f"Running conversion command: {' '.join(convert_cmd)}")
+        result = subprocess.run(convert_cmd, capture_output=True, text=True)
+
+        if result.returncode != 0:
+            print(f"Conversion failed with return code: {result.returncode}")
+            print(f"STDOUT:\n{result.stdout}")
+            print(f"STDERR:\n{result.stderr}")
+            raise RuntimeError(f"Failed to convert HF model to DCP format")
+
+        print(f"Conversion stdout:\n{result.stdout}")
+        if result.stderr:
+            print(f"Conversion stderr:\n{result.stderr}")
+
+        print("Conversion completed successfully!")
+
+    # Now initialize Megatron and load the checkpoint
+    print("\nInitializing Megatron model...")
+    model = initialize_megatron_and_load_checkpoint(dcp_dir, hf_config)
+
+    # Return as list (Megatron expects a list for virtual pipeline parallelism support)
+    return [model], hf_config
+
+
+def initialize_megatron_and_load_checkpoint(dcp_dir, hf_config):
+    """
+    Initialize Megatron with all parallel sizes = 1 and load DCP checkpoint.
+
+    Args:
+        dcp_dir: Directory containing the DCP checkpoint
+        hf_config: HuggingFace config
+
+    Returns:
+        Megatron GPTModel instance
+    """
+    import sys
+
+    # Add Megatron-LM root to path for model_provider and gpt_builders imports
+    import megatron.training
+    megatron_module_path = megatron.training.__file__
+    megatron_root = os.path.dirname(os.path.dirname(os.path.dirname(megatron_module_path)))
+    if megatron_root not in sys.path:
+        sys.path.insert(0, megatron_root)
+
+    from megatron.training import get_args
+    from megatron.training.arguments import parse_args, validate_args
+    from megatron.training.global_vars import set_args, set_global_variables
+    from megatron.core import mpu
+    from megatron.training.checkpointing import load_checkpoint
+    from megatron.core.models.gpt import GPTModel
+    from model_provider import model_provider
+    from gpt_builders import gpt_builder
+
+    # Create Megatron args
+    num_kv_heads = getattr(hf_config, 'num_key_value_heads', hf_config.num_attention_heads)
+
+    megatron_args = [
+        "--num-layers", str(hf_config.num_hidden_layers),
+        "--hidden-size", str(hf_config.hidden_size),
+        "--num-attention-heads", str(hf_config.num_attention_heads),
+        "--seq-length", "4096",
+        "--max-position-embeddings", str(getattr(hf_config, 'max_position_embeddings', 4096)),
+        "--micro-batch-size", "1",
+        "--global-batch-size", "1",
+        "--tensor-model-parallel-size", "1",
+        "--pipeline-model-parallel-size", "1",
+        "--no-masked-softmax-fusion",
+        "--no-bias-gelu-fusion",
+        "--no-bias-dropout-fusion",
+        "--no-gradient-accumulation-fusion",
+        "--bf16",
+        "--normalization", "RMSNorm",
+        "--position-embedding-type", "rope",
+        "--swiglu",
+        "--untie-embeddings-and-output-weights",
+        "--disable-bias-linear",
+        "--no-position-embedding",
+        "--use-rotary-position-embeddings",
+        "--rotary-percent", "1.0",
+        "--rotary-base", str(getattr(hf_config, 'rope_theta', 10000)),
+        "--num-query-groups", str(num_kv_heads),
+        "--load", dcp_dir,
+        "--no-load-optim",
+        "--no-load-rng",
+    ]
+
+    args = parse_args(megatron_args)
+    args.padded_vocab_size = hf_config.vocab_size
+
+    # Set global variables
+    set_global_variables(args)
+
+    # Build model
+    print("Building Megatron GPT model...")
+    model = model_provider(gpt_builder, pre_process=True, post_process=True)
+
+    # Load checkpoint
+    print(f"Loading checkpoint from {dcp_dir}...")
+    iteration = load_checkpoint([model], None, None)
+    print(f"Loaded checkpoint at iteration {iteration}")
+
+    return model
+
 
 
 def convert_hf_to_megatron_state_dict(
