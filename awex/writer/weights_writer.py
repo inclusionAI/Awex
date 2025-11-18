@@ -44,7 +44,6 @@ from awex.util.common import from_binary
 from awex.util.common import stripped_env_vars
 from awex.util.gpu import get_gpu_status
 from awex.util.tensor_util import check_and_log_nan_values
-from awex.writer.nccl_writer import NCCLWeightsWriter
 
 logger = logging.getLogger(__name__)
 
@@ -432,6 +431,8 @@ def get_weights_exchange_writer(train_engine) -> WeightExchangeWriter:
     if train_engine.comm_backend == "file":
         return FileWeightExchangeWriter(train_engine)
     elif train_engine.comm_backend == "nccl":
+        from awex.writer.nccl_writer import NCCLWeightsWriter
+
         return NCCLWeightsWriter(train_engine)
     elif train_engine.comm_backend == "astate":
         from awex.writer.astate_writer import AStateWeightsWriter
