@@ -346,6 +346,7 @@ class NCCLWorkerWeightsReader(WorkerWeightsReader):
             self.weights_update_group,
             self.deserialized_weights,
             self.parameters,
+            step_id=step_id,
         )
         print_current_gpu_status(
             f"after weights update using NCCL for rank {self.rank_coordinate}"

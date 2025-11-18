@@ -20,7 +20,6 @@ import math
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
-from contextlib import contextmanager
 
 import torch
 import torch.distributed as dist
@@ -37,10 +36,13 @@ hang_detector = ThreadPoolExecutor(max_workers=1)
 
 
 class NcclColocateStreamBatchTransport:
+    MAX_STREAMS = 64
+
     def __init__(self, transfer_rank, world_size):
         self.transfer_rank = transfer_rank
         self.world_size = world_size
-        self._streams = []
+        # Initialize a fixed pool of CUDA streams
+        self._stream_pool = [torch.cuda.Stream() for _ in range(min(self.MAX_STREAMS, world_size))]
 
     def update_weights_in_colocate_mode(
         self,
@@ -56,14 +58,12 @@ class NcclColocateStreamBatchTransport:
         recv_parameters,
         *,
         stream=True,
+        step_id=-1,
         **kwargs,
     ):
-        logger.info(f"train_to_infer_device_mapping {train_to_infer_device_mapping}")
-        logger.info(f"infer_to_train_device_mapping {infer_to_train_device_mapping}")
-        logger.info("Using RECURSIVE PARTITION batch_isend_irecv with O(log N) rounds")
-        validate_rank_mappings(
-            train_to_infer_device_mapping, infer_to_train_device_mapping
-        )
+        logger.info(f"Using RECURSIVE PARTITION batch_isend_irecv with O(log N) rounds")
+        task_id = f"{rank_coordinate}-{step_id}"
+        validate_rank_mappings(train_to_infer_device_mapping, infer_to_train_device_mapping)
         start_time = time.time()
 
         # Get send/recv operations dict
@@ -71,10 +71,8 @@ class NcclColocateStreamBatchTransport:
         recv_ops = dict(recv_transfer_plan.operations)
         num_sends = sum(len(ops) for ops in send_ops.values())
         num_recvs = sum(len(ops) for ops in recv_ops.values())
-        logger.info(
-            f"Start to execute weights update for {rank_coordinate}, "
-            f"num_sends {num_sends}, num_recvs {num_recvs}"
-        )
+        logger.info(f"Start to execute weights update for {task_id}, "
+                    f"num_sends {num_sends}, num_recvs {num_recvs}")
 
         # Build P2P operations with sliced tensors
         all_send_p2p_ops = {}  # peer_rank -> List[(plan_op, p2p_op)]
@@ -90,22 +88,16 @@ class NcclColocateStreamBatchTransport:
                 # Self-copy operations
                 for op in ops:
                     send_tensor = send_parameters[op.send_shard_meta.name]
-                    tensor_sliced = slice_tensor(
-                        send_tensor, op, True, slice_context=train_slice_context
-                    )
+                    tensor_sliced = slice_tensor(send_tensor, op, True, slice_context=train_slice_context)
                     tensors_to_copy.append(tensor_sliced)
             else:
                 # P2P send operations
                 p2p_ops = []
                 for op in ops:
                     send_tensor = send_parameters[op.send_shard_meta.name]
-                    tensor_sliced = slice_tensor(
-                        send_tensor, op, True, slice_context=train_slice_context
-                    )
+                    tensor_sliced = slice_tensor(send_tensor, op, True, slice_context=train_slice_context)
                     # Use mapped inference rank for P2P operation
-                    recv_rank = train_to_infer_device_mapping.get(
-                        op.recv_rank, op.recv_rank
-                    )
+                    recv_rank = train_to_infer_device_mapping.get(op.recv_rank, op.recv_rank)
                     p2p_op = dist.P2POp(
                         dist.isend,
                         tensor_sliced.clone(),
@@ -141,23 +133,19 @@ class NcclColocateStreamBatchTransport:
                 tensors_to_copy,
                 recv_transfer_plan.operations[send_rank],
                 recv_parameters,
-                f"tensor copy for {rank_coordinate}",
+                f"tensor copy for {task_id}"
             )
         else:
-            logger.info(f"No tensors to copy for {rank_coordinate}")
+            logger.info(f"No tensors to copy for {task_id}")
 
         future = Future()
         total_send_ops = sum(len(ops) for ops in all_send_p2p_ops.values())
         total_recv_ops = sum(len(ops) for ops in all_recv_p2p_ops.values())
-        msg = f"[{os.getpid()}] execute {total_send_ops} sends {total_recv_ops} recvs with recursive partition for {rank_coordinate}"
+        msg = f"[{os.getpid()}] execute {total_send_ops} sends {total_recv_ops} recvs with recursive partition for {task_id}"
         hang_detector.submit(detect_hang, future, msg, [], timeout=60)
 
         # Execute recursive partition transfer
-        func = (
-            self.execute_recursive_partition_stream_transfer
-            if stream
-            else execute_recursive_partition_transfer
-        )
+        func = self.execute_recursive_partition_stream_transfer if stream else execute_recursive_partition_transfer
         func(
             transfer_rank,
             world_size,
@@ -165,14 +153,14 @@ class NcclColocateStreamBatchTransport:
             all_recv_p2p_ops,
             weights_update_group,
             rank_coordinate,
+            step_id,
         )
 
         future.set_result(True)
         torch.cuda.synchronize()
         duration = time.time() - start_time
-        logger.info(
-            f"Finished executing weights update for {rank_coordinate}, took {duration:.4f} seconds"
-        )
+        logger.info(f"Finished executing weights update for {task_id}, took {duration:.4f} seconds")
+
 
     def execute_recursive_partition_stream_transfer(
         self,
@@ -182,6 +170,7 @@ class NcclColocateStreamBatchTransport:
         all_recv_p2p_ops,  # Dict[peer_rank] -> List[(plan_op, p2p_op)]
         weights_update_group,
         rank_coordinate,
+        step_id,
     ):
         """
         Execute P2P transfer using recursive partition algorithm.
@@ -201,14 +190,11 @@ class NcclColocateStreamBatchTransport:
         Each rank sends/recvs to/from ALL ranks in the other half of its partition.
         """
         num_rounds = int(math.log2(world_size))
-        dist.barrier(
-            group=weights_update_group, device_ids=[torch.cuda.current_device()]
-        )
-        logger.info(
-            f"[{os.getpid()}] [{rank_coordinate}]  Starting recursive partition transfer with {num_rounds} rounds"
-        )
+        prefix = f"[{os.getpid()}] [{rank_coordinate}] [step {step_id}]"
+        start_time = time.time()
+        logger.info(f"{prefix} Starting recursive partition transfer with {num_rounds} rounds")
         for round_idx in range(num_rounds):
-            partition_size = world_size // (2**round_idx)
+            partition_size = world_size // (2 ** round_idx)
             half = partition_size // 2
 
             # Determine my partition base (which partition I'm in)
@@ -218,7 +204,6 @@ class NcclColocateStreamBatchTransport:
 
             # Determine if I'm in first half or second half of my partition
             in_first_half = offset_in_partition < half
-
             # Determine the range of ranks in the other half
             if in_first_half:
                 other_half_start = partition_base + half
@@ -226,93 +211,96 @@ class NcclColocateStreamBatchTransport:
             else:
                 other_half_start = partition_base
                 other_half_end = partition_base + half
-            logger.info(
-                f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx}: partition_size={partition_size}, "
-                f"partition=[{partition_base}, {partition_end}), half={half}, "
-                f"in_first_half={in_first_half}, other_half=[{other_half_start}, {other_half_end})"
-            )
+            logger.info(f"{prefix} Round {round_idx}: partition_size={partition_size}, "
+                       f"partition=[{partition_base}, {partition_end}), half={half}, "
+                       f"in_first_half={in_first_half}, other_half=[{other_half_start}, {other_half_end})")
 
             round_start = time.time()
-            num_ops = 0
             # === PHASE 1: First half sends to second half, second half receives from first half ===
             if in_first_half:
-                # Collect all send operations to ranks in the other half
-                for peer_rank in range(other_half_start, other_half_end):
-                    if peer_rank in all_send_p2p_ops:
-                        num_ops += self._execute_ops(all_send_p2p_ops[peer_rank])
+                # Execute all send operations to ranks in the other half with concurrent execution
+                num_ops = self._execute_ops_concurrent(all_send_p2p_ops, range(other_half_start, other_half_end))
             else:
-                # Collect all recv operations from ranks in the other half
-                for peer_rank in range(other_half_start, other_half_end):
-                    if peer_rank in all_recv_p2p_ops:
-                        num_ops += self._execute_ops(all_recv_p2p_ops[peer_rank])
-            logger.info(
-                f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} Phase 1: enqueued {num_ops} "
-                f"{'sends' if in_first_half else 'recvs'}"
-            )
-            torch.cuda.synchronize()
-            logger.info(
-                f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} Phase 1: executed {num_ops} "
-                f"{'sends' if in_first_half else 'recvs'}"
-            )
-            num_ops2 = 0
+                # Execute all recv operations from ranks in the other half with concurrent execution
+                num_ops = self._execute_ops_concurrent(all_recv_p2p_ops, range(other_half_start, other_half_end))
+            logger.info(f"{prefix} Round {round_idx} Phase 1: enqueued {num_ops} "
+                       f"{'sends' if in_first_half else 'recvs'}")
             # === PHASE 2: First half receives from second half, second half sends to first half ===
             if in_first_half:
-                # Collect all recv operations from ranks in the other half
-                for peer_rank in range(other_half_start, other_half_end):
-                    if peer_rank in all_recv_p2p_ops:
-                        num_ops2 += self._execute_ops(all_recv_p2p_ops[peer_rank])
+                # Execute all recv operations from ranks in the other half with concurrent execution
+                num_ops2 = self._execute_ops_concurrent(all_recv_p2p_ops, range(other_half_start, other_half_end))
             else:
-                # Collect all send operations to ranks in the other half
-                for peer_rank in range(other_half_start, other_half_end):
-                    if peer_rank in all_send_p2p_ops:
-                        num_ops2 += self._execute_ops(all_send_p2p_ops[peer_rank])
-            logger.info(
-                f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} Phase 2: enqueued {num_ops2} "
-                f"{'recvs' if in_first_half else 'sends'}"
-            )
-            torch.cuda.synchronize()
-            logger.info(
-                f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} Phase 2: executed {num_ops2} "
-                f"{'recvs' if in_first_half else 'sends'}"
-            )
+                # Execute all send operations to ranks in the other half with concurrent execution
+                num_ops2 = self._execute_ops_concurrent(all_send_p2p_ops, range(other_half_start, other_half_end))
+            logger.info(f"{prefix} Round {round_idx} Phase 2: enqueued {num_ops2} "
+                       f"{'recvs' if in_first_half else 'sends'}")
             round_duration = time.time() - round_start
-            logger.info(
-                f"[{os.getpid()}] Round {round_idx} completed: "
-                f"phase1={num_ops} ops, phase2={num_ops2} ops, "
-                f"took {round_duration:.4f}s"
-            )
-        logger.info(
-            f"[{os.getpid()}] [{rank_coordinate}] All {num_rounds} rounds completed"
-        )
-        # Final barrier to ensure all ranks complete before proceeding
-        dist.barrier(
-            group=weights_update_group, device_ids=[torch.cuda.current_device()]
-        )
-        logger.info(f"[{os.getpid()}] [{rank_coordinate}] Final barrier passed")
+            logger.info(f"[{os.getpid()}] Round {round_idx} completed: "
+                       f"phase1={num_ops} ops, phase2={num_ops2} ops, "
+                       f"took {round_duration:.4f}s")
+        torch.cuda.synchronize()
+        duration = time.time() - start_time
+        logger.info(f"{prefix} All {num_rounds} rounds completed in {duration:.4f}s")
 
-    def _execute_ops(self, ops):
-        num_ops = 0
-        if not ops:
-            return num_ops
-        with self._get_stream():
-            for plan_op, p2p_op in ops:
-                if p2p_op.op is dist.isend:
-                    dist.send(p2p_op.tensor, p2p_op.peer, group=p2p_op.group)
-                else:
-                    dist.recv(p2p_op.tensor, p2p_op.peer, group=p2p_op.group)
-                num_ops += 1
-        return num_ops
+    def _execute_ops_concurrent(self, ops_dict, peer_ranks):
+        """
+        Execute ops from multiple peers with interleaved execution for better concurrency.
 
-    @contextmanager
-    def _get_stream(self):
-        if not self._streams:
-            self._streams.append(torch.cuda.Stream())
-        stream = self._streams.pop()
-        try:
-            with torch.cuda.stream(stream):
-                yield  # Now the body of "with _get_stream()" executes under stream context
-        finally:
-            self._streams.append(stream)
+        Instead of executing all ops for one peer sequentially (peer1_all_ops, peer2_all_ops, ...),
+        this method interleaves operations in a round-robin fashion (peer1_op1, peer2_op1, ...,
+        peer1_op2, peer2_op2, ...). This allows operations from different peers to overlap and
+        execute concurrently on the GPU.
+
+        Each peer rank consistently uses the same CUDA stream to maintain ordering within
+        that peer's operations, while different peers use different streams (up to max)
+        for concurrent execution.
+
+        Args:
+            ops_dict: Dictionary mapping peer_rank to list of (plan_op, p2p_op) tuples
+            peer_ranks: Range or iterable of peer ranks to process
+
+        Returns:
+            Total number of ops executed
+        """
+        # Collect ops from all peers that have operations, along with their peer_rank
+        peer_ops_with_rank = []
+        active_peer_ranks = []
+        for peer_rank in peer_ranks:
+            if peer_rank in ops_dict:
+                peer_ops_with_rank.append((peer_rank, ops_dict[peer_rank]))
+                active_peer_ranks.append(peer_rank)
+
+        if not peer_ops_with_rank:
+            return 0
+
+        # Allocate stream indices sequentially to active peer ranks for even distribution
+        # This ensures ranks are evenly distributed across available streams
+        peer_to_stream_idx = {}
+        for idx, peer_rank in enumerate(active_peer_ranks):
+            stream_idx = idx % len(self._stream_pool)
+            peer_to_stream_idx[peer_rank] = stream_idx
+
+        # Find the maximum number of ops across all peers
+        max_ops = max(len(ops) for _, ops in peer_ops_with_rank)
+        total_ops = 0
+
+        # Execute ops in round-robin fashion: one op from each peer per iteration
+        # This allows concurrent execution across multiple peers
+        for op_idx in range(max_ops):
+            for peer_rank, ops in peer_ops_with_rank:
+                if op_idx < len(ops):
+                    _, p2p_op = ops[op_idx]
+                    # Use the stream allocated to this peer to maintain ordering
+                    stream_idx = peer_to_stream_idx[peer_rank]
+                    stream = self._stream_pool[stream_idx]
+                    with torch.cuda.stream(stream):
+                        if p2p_op.op is dist.isend:
+                            dist.send(p2p_op.tensor, p2p_op.peer, group=p2p_op.group)
+                        else:
+                            dist.recv(p2p_op.tensor, p2p_op.peer, group=p2p_op.group)
+                    total_ops += 1
+
+        return total_ops
 
 
 def execute_recursive_partition_transfer(
@@ -322,6 +310,7 @@ def execute_recursive_partition_transfer(
     all_recv_p2p_ops,  # Dict[peer_rank] -> List[(plan_op, p2p_op)]
     weights_update_group,
     rank_coordinate,
+    step_id,
 ):
     """
     Execute P2P transfer using recursive partition algorithm with `batch_isend_irecv`.
@@ -329,12 +318,10 @@ def execute_recursive_partition_transfer(
     """
     num_rounds = int(math.log2(world_size))
     dist.barrier(group=weights_update_group, device_ids=[torch.cuda.current_device()])
-    logger.info(
-        f"[{os.getpid()}] Starting recursive partition transfer with {num_rounds} rounds for {rank_coordinate}"
-    )
+    logger.info(f"[{os.getpid()}] Starting recursive partition transfer with {num_rounds} rounds for {rank_coordinate}")
 
     for round_idx in range(num_rounds):
-        partition_size = world_size // (2**round_idx)
+        partition_size = world_size // (2 ** round_idx)
         half = partition_size // 2
 
         # Determine my partition base (which partition I'm in)
@@ -353,11 +340,9 @@ def execute_recursive_partition_transfer(
             other_half_start = partition_base
             other_half_end = partition_base + half
 
-        logger.info(
-            f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx}: partition_size={partition_size}, "
-            f"partition=[{partition_base}, {partition_end}), half={half}, "
-            f"in_first_half={in_first_half}, other_half=[{other_half_start}, {other_half_end})"
-        )
+        logger.info(f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx}: partition_size={partition_size}, "
+                   f"partition=[{partition_base}, {partition_end}), half={half}, "
+                   f"in_first_half={in_first_half}, other_half=[{other_half_start}, {other_half_end})")
 
         round_start = time.time()
 
@@ -381,26 +366,18 @@ def execute_recursive_partition_transfer(
         # All ranks call batch_isend_irecv together (some with sends, some with recvs)
         # IMPORTANT: ALL ranks must call batch_isend_irecv, even if they have no operations
         # Otherwise, sends from ranks with operations won't match with receives from ranks without
-        logger.info(
-            f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} Phase 1: executing {len(phase1_ops)} "
-            f"{'sends' if in_first_half else 'recvs'}"
-        )
+        logger.info(f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} Phase 1: executing {len(phase1_ops)} "
+                   f"{'sends' if in_first_half else 'recvs'}")
         reqs = dist.batch_isend_irecv(phase1_ops)
         for req in reqs:
             req.wait()
-        logger.info(
-            f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} Phase 1: completed {len(phase1_ops)} ops"
-        )
+        logger.info(f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} Phase 1: completed {len(phase1_ops)} ops")
 
         # MUST synchronize before barrier to ensure CUDA operations complete
         torch.cuda.synchronize()
         # Barrier to ensure all ranks complete Phase 1 before starting Phase 2
-        dist.barrier(
-            group=weights_update_group, device_ids=[torch.cuda.current_device()]
-        )
-        logger.info(
-            f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} Phase 1: barrier passed"
-        )
+        dist.barrier(group=weights_update_group, device_ids=[torch.cuda.current_device()])
+        logger.info(f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} Phase 1: barrier passed")
 
         # === PHASE 2: First half receives from second half, second half sends to first half ===
         phase2_ops = []
@@ -419,40 +396,26 @@ def execute_recursive_partition_transfer(
 
         # All ranks call batch_isend_irecv together (some with recvs, some with sends)
         # IMPORTANT: ALL ranks must call batch_isend_irecv, even if they have no operations
-        logger.info(
-            f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} Phase 2: executing {len(phase2_ops)} "
-            f"{'recvs' if in_first_half else 'sends'}"
-        )
+        logger.info(f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} Phase 2: executing {len(phase2_ops)} "
+                   f"{'recvs' if in_first_half else 'sends'}")
         reqs = dist.batch_isend_irecv(phase2_ops)
         for req in reqs:
             req.wait()
-        logger.info(
-            f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} Phase 2: completed {len(phase2_ops)} ops"
-        )
+        logger.info(f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} Phase 2: completed {len(phase2_ops)} ops")
 
         # MUST synchronize before barrier to ensure CUDA operations complete
         torch.cuda.synchronize()
         # Barrier to ensure all ranks complete Phase 2 before next round
-        dist.barrier(
-            group=weights_update_group, device_ids=[torch.cuda.current_device()]
-        )
-        logger.info(
-            f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} Phase 2: barrier passed"
-        )
+        dist.barrier(group=weights_update_group, device_ids=[torch.cuda.current_device()])
+        logger.info(f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} Phase 2: barrier passed")
 
         round_duration = time.time() - round_start
-        logger.info(
-            f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} completed: "
-            f"phase1={len(phase1_ops)} ops, phase2={len(phase2_ops)} ops, "
-            f"took {round_duration:.4f}s"
-        )
+        logger.info(f"[{os.getpid()}] [{rank_coordinate}] Round {round_idx} completed: "
+                   f"phase1={len(phase1_ops)} ops, phase2={len(phase2_ops)} ops, "
+                   f"took {round_duration:.4f}s")
 
-    logger.info(
-        f"[{os.getpid()}] [{rank_coordinate}] All {num_rounds} rounds completed for {rank_coordinate}"
-    )
+    logger.info(f"[{os.getpid()}] [{rank_coordinate}] All {num_rounds} rounds completed for {rank_coordinate}")
 
     # Final barrier to ensure all ranks complete before proceeding
     dist.barrier(group=weights_update_group, device_ids=[torch.cuda.current_device()])
-    logger.info(
-        f"[{os.getpid()}] [{rank_coordinate}] Final barrier passed for {rank_coordinate}"
-    )
+    logger.info(f"[{os.getpid()}] [{rank_coordinate}] Final barrier passed for {rank_coordinate}")

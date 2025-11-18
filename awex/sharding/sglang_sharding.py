@@ -42,7 +42,7 @@ def get_sglang_sharding_strategy(
 
 def get_sglang_rank_info(model_context, engine_rank) -> RankInfo:
     scheduler = model_context["scheduler"]
-    infer_engine_config = scheduler.infer_engine_config
+    infer_engine_config = scheduler.server_args
     if infer_engine_config.dp_size != 1 and not infer_engine_config.enable_dp_attention:
         raise ValueError(
             f"DP size is not 1, but {infer_engine_config.dp_size}. This is not supported yet."
