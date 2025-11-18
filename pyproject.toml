@@ -35,6 +35,9 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = []
+test = [
+    "modelscope>=1.9.0",  # For faster download models
+]
 
 [project.urls]
 Homepage = "https://github.com/inclusionAI/awex"

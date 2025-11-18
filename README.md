@@ -77,6 +77,9 @@ cd awex
 # Install in development mode with dev dependencies
 pip install -e ".[dev]"
 
+# For testing
+pip install -e ".[test]"
+
 # Run tests
 pytest -v -s .
 
@@ -87,6 +90,8 @@ pytest -v -s awex/tests/test_meta_resolver.py
 ruff format .
 ruff check --fix .
 ```
+
+**Note**: The test suite automatically detects network availability and falls back to ModelScope when HuggingFace is not accessible. To enable this feature, install the test dependencies with `pip install -e ".[test]"`.
 
 See [DEVELOPMENT.md](DEVELOPMENT.md) for detailed build instructions.
 

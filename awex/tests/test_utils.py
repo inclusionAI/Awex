@@ -16,9 +16,43 @@
 # under the License.
 
 from typing import Tuple
+import os
 
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, PretrainedConfig
+
+
+def is_huggingface_available() -> bool:
+    """
+    Check if HuggingFace is accessible.
+
+    Returns:
+        True if HuggingFace is accessible, False otherwise
+    """
+    try:
+        import urllib.request
+        import socket
+
+        # Set a short timeout to quickly detect network issues
+        socket.setdefaulttimeout(5)
+
+        # Try to access HuggingFace
+        urllib.request.urlopen("https://huggingface.co", timeout=1)
+        return True
+    except Exception:
+        return False
+
+
+def setup_modelscope_cache():
+    """
+    Setup ModelScope cache directory and environment.
+    """
+    try:
+        from modelscope.hub.snapshot_download import snapshot_download
+        return True
+    except ImportError:
+        print("Warning: modelscope is not installed. Install it with: pip install modelscope")
+        return False
 
 
 def megatron_model_from_hf(
@@ -43,7 +77,35 @@ def megatron_model_from_hf(
         This function does NOT initialize Megatron. It only loads HF model.
         For testing weights exchange between Megatron and SGLang.
     """
-    print(f"Loading model from HuggingFace: {model_path}")
+    # Detect network and use appropriate source
+    use_modelscope = False
+    if not is_huggingface_available():
+        print("HuggingFace is not accessible, trying ModelScope...")
+        if setup_modelscope_cache():
+            use_modelscope = True
+            # Map HuggingFace model names to ModelScope equivalents
+            modelscope_map = {
+                "Qwen/Qwen2-1.5B": "qwen/Qwen2-1.5B",
+                "Qwen/Qwen2-7B": "qwen/Qwen2-7B",
+                "Qwen/Qwen2.5-1.5B": "qwen/Qwen2.5-1.5B",
+                "Qwen/Qwen2.5-7B": "qwen/Qwen2.5-7B",
+            }
+            model_path_for_download = modelscope_map.get(model_path, model_path.replace("Qwen/", "qwen/"))
+        else:
+            print("Warning: Neither HuggingFace nor ModelScope is available. Attempting to load from local cache...")
+
+    print(f"Loading model from {'ModelScope' if use_modelscope else 'HuggingFace'}: {model_path}")
+
+    # Download model from ModelScope if needed
+    if use_modelscope:
+        try:
+            from modelscope import snapshot_download
+            local_model_path = snapshot_download(model_path_for_download, cache_dir=os.path.expanduser("~/.cache/modelscope"))
+            print(f"Model downloaded to: {local_model_path}")
+            model_path = local_model_path
+        except Exception as e:
+            print(f"Failed to download from ModelScope: {e}")
+            print("Falling back to HuggingFace (may fail if not accessible)...")
 
     # Load config
     hf_config = AutoConfig.from_pretrained(
