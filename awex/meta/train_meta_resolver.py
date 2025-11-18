@@ -44,7 +44,7 @@ class McoreParamMetaResolver(ParamMetaResolver):
     ):
         super().__init__(hf_config)
         self._train_engine = train_engine
-        self._mcore_model = train_engine.model_engine
+        self._mcore_model = train_engine.model
         self._model_arch_name = self.hf_config.architectures[0]
         from awex.sharding.mcore_sharding import (
             get_mcore_rank_info,

@@ -82,7 +82,7 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
         self.meta_server_client = MetaServerClient(*self.meta_server_addr.split(":"))
         self.infer_conf = None
         self.infer_engine_config = None
-        self.model = self.train_engine.model_engine
+        self.model = self.train_engine.model
         self.hf_config = self.train_engine.hf_config
         self.model_arch_name = self.hf_config.architectures[0]
         self.validated_steps = 0
