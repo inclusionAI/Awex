@@ -112,18 +112,17 @@ class McoreToHFWeightConverter:
         elif "self_attention.linear_qkv.bias" in name:
             if self._fuse_qkv(name):
                 # Keep fused format
+                parameter = convert_qkv_bias_along_tp_attention(
+                    parameter, self.infer_atten_tp_size
+                )
                 return [("attention.query_key_value.bias", parameter)]
             else:
                 # Split into separate Q, K, V projection biases
-                shape0 = parameter.shape[0]
-                stride = shape0 // 3
+                query, key, value = transform_mcore_qkv_bias(parameter)
                 return [
-                    ("attention.q_proj.bias", parameter.narrow(0, 0, stride)),
-                    ("attention.k_proj.bias", parameter.narrow(0, stride, stride)),
-                    (
-                        "attention.v_proj.bias",
-                        parameter.narrow(0, 2 * stride, stride),
-                    ),
+                    ("attention.q_proj.bias", query),
+                    ("attention.k_proj.bias", key),
+                    ("attention.v_proj.bias", value),
                 ]
         elif "self_attention.linear_qkv.layer_norm_weight" in name:
             return [("input_layernorm.weight", parameter)]
@@ -255,7 +254,7 @@ class McoreToHFWeightConverter:
     def _convert_lm_head_param(
         self, name: str, parameter: torch.Tensor
     ) -> List[Tuple[str, torch.Tensor]]:
-        if self.hf_config.norm_head:
+        if getattr(self.hf_config, "norm_head", False):
             import torch.nn.functional as F
 
             parameter = F.normalize(parameter, dim=0, p=2, eps=1e-7)
@@ -360,18 +359,61 @@ def transform_mcore_qkv_weight(weight: torch.Tensor):
 
     each_kv_size = head_size
     each_query_size = head_size * divide(total_num_heads, total_num_kv_heads)
-    query_list = []
-    key_list = []
-    value_list = []
-    for qkv in torch.chunk(weight, total_num_kv_heads, dim=0):
-        q, k, v = qkv.split([each_query_size, each_kv_size, each_kv_size], dim=0)
-        query_list.append(q)
-        key_list.append(k)
-        value_list.append(v)
-    # concat the query, key, value
-    all_query = torch.cat(query_list, dim=0)
-    all_key = torch.cat(key_list, dim=0)
-    all_value = torch.cat(value_list, dim=0)
+
+    # Check if weights are in replicated format or compact GQA format
+    actual_size = weight.shape[0]
+    expected_compact_size = (each_query_size + 2 * each_kv_size) * total_num_kv_heads
+    expected_replicated_size = 3 * hidden_size  # Q, K, V all have full hidden_size
+
+    if actual_size == expected_replicated_size:
+        # Replicated format: K and V are replicated to match query heads
+        # Split into Q, K, V where each has size hidden_size
+        q, k, v = weight.split([hidden_size, hidden_size, hidden_size], dim=0)
+
+        # De-duplicate K and V by selecting only the unique KV groups
+        # K and V are replicated such that each KV group appears (total_num_heads / total_num_kv_heads) times
+        heads_per_kv_group = divide(total_num_heads, total_num_kv_heads)
+        k_heads = k.reshape(total_num_heads, head_size, -1)
+        v_heads = v.reshape(total_num_heads, head_size, -1)
+
+        # Select one representative head from each KV group
+        k_unique = []
+        v_unique = []
+        for i in range(total_num_kv_heads):
+            # Each KV group starts at index i * heads_per_kv_group
+            k_unique.append(k_heads[i * heads_per_kv_group])
+            v_unique.append(v_heads[i * heads_per_kv_group])
+
+        all_key = torch.cat(k_unique, dim=0).reshape(-1, k.shape[-1])
+        all_value = torch.cat(v_unique, dim=0).reshape(-1, v.shape[-1])
+        all_query = q
+
+    elif actual_size == expected_compact_size:
+        # Compact GQA format: K and V have reduced size
+        query_list = []
+        key_list = []
+        value_list = []
+        expected_chunk_size = each_query_size + 2 * each_kv_size
+        for qkv in torch.chunk(weight, total_num_kv_heads, dim=0):
+            q, k, v = qkv.split([each_query_size, each_kv_size, each_kv_size], dim=0)
+            query_list.append(q)
+            key_list.append(k)
+            value_list.append(v)
+        # concat the query, key, value
+        all_query = torch.cat(query_list, dim=0)
+        all_key = torch.cat(key_list, dim=0)
+        all_value = torch.cat(value_list, dim=0)
+    else:
+        raise ValueError(
+            f"QKV weight size mismatch - unsupported format:\n"
+            f"  Actual weight shape[0]: {actual_size}\n"
+            f"  Expected compact GQA size: {expected_compact_size}\n"
+            f"  Expected replicated size: {expected_replicated_size}\n"
+            f"  Config: hidden_size={hidden_size}, num_heads={total_num_heads}, "
+            f"num_kv_heads={total_num_kv_heads}, head_size={head_size}\n"
+            f"  Per-group sizes: query={each_query_size}, kv={each_kv_size}"
+        )
+
     return all_query, all_key, all_value
 
 
@@ -395,6 +437,115 @@ def convert_qkv_weight_along_tp_attention(
     else:
         num_kv_head_replicas = 1
     query, key, value = transform_mcore_qkv_weight(weight)
+    query_shards = query.chunk(infer_atten_tp_size, dim=0)
+    if infer_atten_tp_size >= total_num_kv_heads:
+        key_chunks = key.chunk(total_num_kv_heads, dim=0)
+        key_shards = [k for k in key_chunks for _ in range(num_kv_head_replicas)]
+        value_chunks = value.chunk(total_num_kv_heads, dim=0)
+        value_shards = [v for v in value_chunks for _ in range(num_kv_head_replicas)]
+    else:
+        key_shards = key.chunk(infer_atten_tp_size, dim=0)
+        value_shards = value.chunk(infer_atten_tp_size, dim=0)
+    qkv_tp_groups = []
+    for query_shard, key_shard, value_shard in zip(
+        query_shards, key_shards, value_shards
+    ):
+        qkv_tp_groups.append(query_shard)
+        qkv_tp_groups.append(key_shard)
+        qkv_tp_groups.append(value_shard)
+    return torch.cat(qkv_tp_groups, dim=0)
+
+
+def transform_mcore_qkv_bias(bias: torch.Tensor):
+    """
+    Transform Megatron QKV bias for grouped-query attention.
+    Similar to transform_mcore_qkv_weight but for bias parameters.
+    """
+    from megatron.training import get_args
+
+    args = get_args()
+    bias = get_full_tensor(bias, dim=0)
+    hidden_size = args.hidden_size
+    total_num_heads = args.num_attention_heads
+    total_num_kv_heads = args.num_query_groups
+    head_size = divide(hidden_size, total_num_heads)
+
+    each_kv_size = head_size
+    each_query_size = head_size * divide(total_num_heads, total_num_kv_heads)
+
+    # Check if biases are in replicated format or compact GQA format
+    actual_size = bias.shape[0]
+    expected_compact_size = (each_query_size + 2 * each_kv_size) * total_num_kv_heads
+    expected_replicated_size = 3 * hidden_size  # Q, K, V all have full hidden_size
+
+    if actual_size == expected_replicated_size:
+        # Replicated format: K and V are replicated to match query heads
+        # Split into Q, K, V where each has size hidden_size
+        q, k, v = bias.split([hidden_size, hidden_size, hidden_size], dim=0)
+
+        # De-duplicate K and V by selecting only the unique KV groups
+        # K and V are replicated such that each KV group appears (total_num_heads / total_num_kv_heads) times
+        heads_per_kv_group = divide(total_num_heads, total_num_kv_heads)
+        k_heads = k.reshape(total_num_heads, head_size)
+        v_heads = v.reshape(total_num_heads, head_size)
+
+        # Select one representative head from each KV group
+        k_unique = []
+        v_unique = []
+        for i in range(total_num_kv_heads):
+            # Each KV group starts at index i * heads_per_kv_group
+            k_unique.append(k_heads[i * heads_per_kv_group])
+            v_unique.append(v_heads[i * heads_per_kv_group])
+
+        all_key = torch.cat(k_unique, dim=0).reshape(-1)
+        all_value = torch.cat(v_unique, dim=0).reshape(-1)
+        all_query = q
+
+    elif actual_size == expected_compact_size:
+        # Compact GQA format: K and V have reduced size
+        query_list = []
+        key_list = []
+        value_list = []
+        for qkv in torch.chunk(bias, total_num_kv_heads, dim=0):
+            q, k, v = qkv.split([each_query_size, each_kv_size, each_kv_size], dim=0)
+            query_list.append(q)
+            key_list.append(k)
+            value_list.append(v)
+        # concat the query, key, value
+        all_query = torch.cat(query_list, dim=0)
+        all_key = torch.cat(key_list, dim=0)
+        all_value = torch.cat(value_list, dim=0)
+    else:
+        raise ValueError(
+            f"QKV bias size mismatch - unsupported format:\n"
+            f"  Actual bias shape[0]: {actual_size}\n"
+            f"  Expected compact GQA size: {expected_compact_size}\n"
+            f"  Expected replicated size: {expected_replicated_size}\n"
+            f"  Config: hidden_size={hidden_size}, num_heads={total_num_heads}, "
+            f"num_kv_heads={total_num_kv_heads}, head_size={head_size}\n"
+            f"  Per-group sizes: query={each_query_size}, kv={each_kv_size}"
+        )
+
+    return all_query, all_key, all_value
+
+
+def convert_qkv_bias_along_tp_attention(
+    bias: torch.Tensor, infer_atten_tp_size: int
+):
+    """
+    Convert QKV bias for SGlang format with TP attention.
+    Similar to convert_qkv_weight_along_tp_attention but for bias parameters.
+    """
+    from megatron.training import get_args
+
+    args = get_args()
+    total_num_kv_heads = args.num_query_groups
+    # Divide the bias along the dimension.
+    if infer_atten_tp_size >= total_num_kv_heads:
+        num_kv_head_replicas = divide(infer_atten_tp_size, total_num_kv_heads)
+    else:
+        num_kv_head_replicas = 1
+    query, key, value = transform_mcore_qkv_bias(bias)
     query_shards = query.chunk(infer_atten_tp_size, dim=0)
     if infer_atten_tp_size >= total_num_kv_heads:
         key_chunks = key.chunk(total_num_kv_heads, dim=0)

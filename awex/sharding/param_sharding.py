@@ -39,17 +39,31 @@ _default_parameter_sharding_dimensions = {
     # Word embeddings and output layers
     "word_embeddings.weight": 0,
     "lm_head.weight": 0,
-    # Attention layers
+    # Attention layers - weights
     "query_key_value.weight": 0,
+    "q_proj.weight": 0,
+    "k_proj.weight": 0,
+    "v_proj.weight": 0,
     "dense.weight": 1,
+    # Attention layers - biases
+    "query_key_value.bias": 0,
+    "q_proj.bias": 0,
+    "k_proj.bias": 0,
+    "v_proj.bias": 0,
+    "dense.bias": 0,  # Note: bias is NOT sharded along dim 1 like weight, but dim 0
     # MLP expert layers
     "experts.w13_weight": 0,  # Second dimension sharded (2816 -> 704)
     "experts.w2_weight": 1,  # Third dimension sharded (1408 -> 352)
-    # MLP or shared expert layers
+    # MLP or shared expert layers - weights
     "gate_up_proj.weight": 0,
     "gate_proj.weight": 0,
     "up_proj.weight": 0,
     "down_proj.weight": 1,
+    # MLP or shared expert layers - biases
+    "gate_up_proj.bias": 0,
+    "gate_proj.bias": 0,
+    "up_proj.bias": 0,
+    "down_proj.bias": 0,  # Note: bias is NOT sharded along dim 1 like weight, but dim 0
 }
 
 

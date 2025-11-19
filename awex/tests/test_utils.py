@@ -327,7 +327,7 @@ def initialize_megatron_and_load_checkpoint(dcp_dir, hf_config, hf_model_dir):
         iteration = load_checkpoint([model], None, None)
         print(f"Loaded checkpoint at iteration {iteration}")
     except Exception as e:
-        print(f"Warning: Failed to load checkpoint: {e}")
+        print(f"Warning: Failed to load checkpoint: {str(e)[:100]}")
         print("Using randomly initialized model instead (sufficient for testing weights writer)")
 
     return model
