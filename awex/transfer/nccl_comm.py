@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+from typing import Dict
 
 from awex import logging
 import math
@@ -392,7 +393,7 @@ def nccl_build_send_ops(parameters, transfer_plan, weights_update_group, copy_ra
     return p2p_op_list, copy_op_list
 
 
-def nccl_build_recv_ops(parameters, transfer_plan, weights_update_group):
+def nccl_build_recv_ops(parameters: Dict[str, torch.Tensor], transfer_plan, weights_update_group):
     p2p_op_list = []
     recv_progress = {rank: 0 for rank in transfer_plan.operations.keys()}
     unfinished_ranks = set(transfer_plan.operations.keys())
@@ -419,3 +420,4 @@ def nccl_build_recv_ops(parameters, transfer_plan, weights_update_group):
                 finished_ranks.add(send_rank)
         for rank in finished_ranks:
             unfinished_ranks.remove(rank)
+    return p2p_op_list

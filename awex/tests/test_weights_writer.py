@@ -30,6 +30,7 @@ from awex.config import InferenceConfig
 from awex.meta.meta_server import start_meta_server
 from awex.meta.meta_server import MetaServerClient
 from awex.tests.test_utils import megatron_model_from_hf
+from awex.transfer.nccl_comm import nccl_build_recv_ops
 from awex.transfer.transfer_plan import TransferPlanBuilder, slice_tensor
 from awex.util.process_group import (
     init_weights_update_group,
@@ -259,63 +260,41 @@ def weights_reader(meta_server_addr):
             )
         break
 
-    tensors_map = {}
+    # Parameters are keyed by their shard name to mirror how the writer passes tensors.
+    parameters = {}
     for rank, operations in transfer_plan.operations.items():
         for operation in operations:
+            param_name = operation.recv_shard_meta.name
+            if param_name in parameters:
+                continue
             tensor = torch.ones(
                 operation.recv_shard_meta.shape,
                 device=f"cuda:{torch.cuda.current_device()}",
-                dtype=operation.send_shard_meta.dtype,
+                dtype=operation.recv_shard_meta.dtype,
             )
-            tensors_map[id(operation)] = tensor
+            parameters[param_name] = tensor
     torch.cuda.synchronize(device=torch.cuda.current_device())
 
     # Build recv operations in round-robin order to match the sender's round-robin pattern
     # The sender uses nccl_build_send_ops which interleaves operations across ranks
-    p2p_ops = []
-    recv_progress = {rank: 0 for rank in transfer_plan.operations.keys()}
-    unfinished_ranks = set(transfer_plan.operations.keys())
+    all_ranks = list(transfer_plan.operations.keys())  # Preserve plan's order
+    p2p_ops = nccl_build_recv_ops(parameters, transfer_plan, weights_update_group)
+    logger.info(f"Reader (rank 0): Building recv operations from sender ranks: {all_ranks}")
 
-    while len(unfinished_ranks) > 0:
-        finished_ranks = set()
-        for rank in unfinished_ranks:
-            operations = transfer_plan.operations[rank]
-            progress = recv_progress[rank]
-            if progress < len(operations):
-                operation = operations[progress]
-                tensor = tensors_map[id(operation)]
-                original_shape = tensor.shape
-                tensor = slice_tensor(tensor, operation, False)
-                logger.info(
-                    f"Tensor {operation.recv_shard_meta.name}: rank={rank}, "
-                    f"original_shape={original_shape}, sliced_shape={tensor.shape}, dtype={tensor.dtype}"
-                )
-                p2p_op = dist.P2POp(
-                    dist.irecv,
-                    tensor,
-                    rank,
-                    group=weights_update_group,
-                )
-                p2p_ops.append(p2p_op)
-                recv_progress[rank] = progress + 1
-            else:
-                finished_ranks.add(rank)
-        for rank in finished_ranks:
-            unfinished_ranks.remove(rank)
-    logger.info(f"Start to batch recv weights with {len(p2p_ops)} operations in round-robin order")
 
     # Debug: Check if tensors are properly allocated
     logger.info("Debug: Verifying recv operations were created correctly")
     first_rank = list(transfer_plan.operations.keys())[0]
     first_ops = transfer_plan.operations[first_rank][:3]
     for i, operation in enumerate(first_ops):
-        tensor = tensors_map[id(operation)]
+        tensor = parameters[operation.recv_shard_meta.name]
         logger.info(
             f"Tensor {i}: {operation.recv_shard_meta.name}, "
             f"shape={tensor.shape}, dtype={tensor.dtype}, "
             f"device={tensor.device}, is_contiguous={tensor.is_contiguous()}"
         )
 
+    logger.info(f"Start to batch recv weights with {len(p2p_ops)} operations")
     reqs = dist.batch_isend_irecv(p2p_ops)
     logger.info(f"Started batch_isend_irecv with {len(reqs)} requests (reader side)")
     logger.info(f"Reader: Initiated {len(p2p_ops)} irecv operations")
