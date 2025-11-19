@@ -30,7 +30,7 @@ from awex.config import InferenceConfig
 from awex.meta.meta_server import start_meta_server
 from awex.meta.meta_server import MetaServerClient
 from awex.tests.test_utils import megatron_model_from_hf
-from awex.transfer.nccl_comm import nccl_build_recv_ops
+from awex.transfer.nccl_comm import nccl_build_recv_ops, batch_send_recv
 from awex.transfer.transfer_plan import TransferPlanBuilder, slice_tensor
 from awex.util.process_group import (
     init_weights_update_group,
@@ -166,7 +166,6 @@ def init_process_group(rank, world_size, port):
     os.environ["WORLD_SIZE"] = str(world_size)
 
     dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
-    torch.cuda.set_device(0)
 
 
 def weights_reader(meta_server_addr):
@@ -294,56 +293,26 @@ def weights_reader(meta_server_addr):
             f"device={tensor.device}, is_contiguous={tensor.is_contiguous()}"
         )
 
-    logger.info(f"Start to batch recv weights with {len(p2p_ops)} operations")
-    reqs = dist.batch_isend_irecv(p2p_ops)
-    logger.info(f"Started batch_isend_irecv with {len(reqs)} requests (reader side)")
-    logger.info(f"Reader: Initiated {len(p2p_ops)} irecv operations")
+    logger.info(f"Start to receive weights with {len(p2p_ops)} operations")
 
-    # Set up a timeout handler
-    class TimeoutError(Exception):
-        pass
-
-    def timeout_handler(signum, frame):
-        raise TimeoutError("Operation timed out")
-
-    # Wait for each request with timeout
-    timeout_seconds = 60  # 60 second timeout
-    old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-
-    try:
-        for i, req in enumerate(reqs):
-            logger.info(f"Waiting for request {i}/{len(reqs)}")
-            signal.alarm(timeout_seconds)
-            try:
-                req.wait()
-                signal.alarm(0)  # Cancel the alarm
-                logger.info(f"Request {i}/{len(reqs)} completed")
-            except TimeoutError:
-                logger.error(f"Request {i} timed out after {timeout_seconds} seconds")
-                signal.alarm(0)
-                raise
-    finally:
-        signal.alarm(0)  # Make sure alarm is cancelled
-        signal.signal(signal.SIGALRM, old_handler)  # Restore old handler
-
-    logger.info("All requests completed, synchronizing CUDA")
+    # Execute recv operations via batch_send_recv to share the same
+    # scheduling and stream assignment logic as the production reader.
+    logger.info(
+        f"Test reader: Executing {len(p2p_ops)} recv ops via batch_send_recv"
+    )
+    batch_send_recv(send_ops=[], recv_ops=p2p_ops, async_op=False, use_group=False)
+    logger.info("All recv operations completed, synchronizing CUDA")
     torch.cuda.synchronize(device=torch.cuda.current_device())
     logger.info("Finished receiving weights")
 
     # Barrier can also hang, so add timeout
     logger.info("Waiting at barrier")
-    signal.signal(signal.SIGALRM, timeout_handler)
-    signal.alarm(60)
     try:
         dist.barrier(group=weights_update_group, device_ids=[torch.cuda.current_device()])
-        signal.alarm(0)
         logger.info("Barrier completed")
     except TimeoutError:
-        signal.alarm(0)
         logger.error("Barrier timed out")
         raise
-    finally:
-        signal.alarm(0)
 
     logger.info("Start to destroy process group")
     dist.destroy_process_group()

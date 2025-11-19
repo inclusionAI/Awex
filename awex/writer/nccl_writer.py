@@ -22,7 +22,7 @@ import time
 
 import torch
 
-from awex.transfer.nccl_comm import nccl_build_send_ops
+from awex.transfer.nccl_comm import nccl_build_send_ops, batch_send_recv
 from awex.transfer.transfer_plan import TransferPlanBuilder, slice_tensor
 from awex.util.common import get_ip_address, compute_statistics
 from awex.util.gpu import print_current_gpu_status
@@ -159,21 +159,28 @@ class NCCLWeightsWriter(WeightsExchangeShardingWriter):
         """
         rank_coordinate = self.transfer_rank
         logger.info(
-            f"Start to send weights using NCCL to {len(self.transfer_plan.operations)} ranks({self.recv_ranks_sample}) "
-            f"from rank {rank_coordinate} with {self.num_to_sends} sends"
+            f"Start to send weights using NCCL to {len(self.transfer_plan.operations)} "
+            f"ranks({self.recv_ranks_sample}) from rank {rank_coordinate} "
+            f"with {self.num_to_sends} sends"
         )
         start_time = time.time()
         parameters = self.convert_parameters()
-        logger.info(f"Writer: Converting parameters completed, building send ops")
+        logger.info("Writer: Converting parameters completed, building send ops")
         p2p_op_list, _ = nccl_build_send_ops(
             parameters, self.transfer_plan, self.weights_update_group, -1
         )
-        logger.info(f"Writer: Built {len(p2p_op_list)} send operations to {len(self.transfer_plan.operations)} ranks")
-        logger.info(f"Writer: About to call batch_isend_irecv with {len(p2p_op_list)} operations...")
-        reqs = dist.batch_isend_irecv(p2p_op_list)
-        logger.info(f"Writer: batch_isend_irecv completed, got {len(reqs)} requests")
-        for req in reqs:
-            req.wait()
+        logger.info(
+            f"Writer: Built {len(p2p_op_list)} send operations to "
+            f"{len(self.transfer_plan.operations)} ranks"
+        )
+
+        # Execute all sends via batch_send_recv to get consistent interleaving
+        # and per-peer stream assignment without relying directly on
+        # batch_isend_irecv.
+        logger.info(
+            f"Writer: Executing {len(p2p_op_list)} send ops via batch_send_recv"
+        )
+        batch_send_recv(send_ops=p2p_op_list, recv_ops=[], async_op=False, use_group=False)
         torch.cuda.synchronize(device=torch.cuda.current_device())
         duration = time.time() - start_time
         logger.info(

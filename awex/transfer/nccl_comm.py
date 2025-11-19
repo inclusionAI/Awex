@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-from typing import Dict
+from typing import Dict, List, Optional, Sequence
 
 from awex import logging
 import math
@@ -29,6 +29,31 @@ from awex.transfer.transfer_plan import slice_tensor
 
 
 logger = logging.getLogger(__name__)
+
+
+NUM_COMM_STREAMS = 64
+_COMM_STREAMS_PER_DEVICE: Dict[int, List[torch.cuda.Stream]] = {}
+
+
+def _get_comm_streams() -> List[torch.cuda.Stream]:
+    """Get (and lazily create) CUDA streams for the current device.
+
+    We create a pool of NUM_COMM_STREAMS streams per CUDA device to allow
+    concurrent execution of P2P send/recv operations. If CUDA is not
+    available, an empty list is returned and the default stream is used.
+    """
+
+    if not torch.cuda.is_available():
+        return []
+
+    device_index = torch.cuda.current_device()
+    streams = _COMM_STREAMS_PER_DEVICE.get(device_index)
+    if streams is None:
+        streams = [
+            torch.cuda.Stream(device=device_index) for _ in range(NUM_COMM_STREAMS)
+        ]
+        _COMM_STREAMS_PER_DEVICE[device_index] = streams
+    return streams
 
 
 class NcclColocateTransport:
@@ -421,3 +446,139 @@ def nccl_build_recv_ops(parameters: Dict[str, torch.Tensor], transfer_plan, weig
         for rank in finished_ranks:
             unfinished_ranks.remove(rank)
     return p2p_op_list
+
+
+def _interleave_p2p_ops_by_peer(ops: Sequence[dist.P2POp]) -> List[dist.P2POp]:
+    """Return a new list of P2P ops interleaved by peer rank.
+
+    This performs a simple round-robin across peers so that operations to
+    different ranks are interleaved, which tends to give better overlap for
+    multi-rank communication patterns.
+    """
+
+    if not ops:
+        return []
+
+    by_peer: Dict[int, List[dist.P2POp]] = {}
+    for op in ops:
+        by_peer.setdefault(op.peer, []).append(op)
+
+    peers = sorted(by_peer.keys())
+    progress = {peer: 0 for peer in peers}
+    remaining = sum(len(v) for v in by_peer.values())
+    interleaved: List[dist.P2POp] = []
+
+    while remaining > 0:
+        for peer in peers:
+            idx = progress[peer]
+            bucket = by_peer[peer]
+            if idx >= len(bucket):
+                continue
+            interleaved.append(bucket[idx])
+            progress[peer] = idx + 1
+            remaining -= 1
+
+    return interleaved
+
+
+def _run_p2p_op(op: dist.P2POp, async_op: bool) -> Optional[dist.Work]:
+    """Run a single P2P op, returning Work for async operations.
+
+    The direction (send vs recv) is determined by ``op.op``; ``async_op``
+    selects between blocking and non-blocking variants.
+    """
+
+    if op.op is dist.isend or op.op is dist.send:
+        if async_op:
+            return dist.isend(op.tensor, op.peer, group=op.group)
+        dist.send(op.tensor, op.peer, group=op.group)
+        return None
+    if op.op is dist.irecv or op.op is dist.recv:
+        if async_op:
+            return dist.irecv(op.tensor, op.peer, group=op.group)
+        dist.recv(op.tensor, op.peer, group=op.group)
+        return None
+    raise ValueError(f"Unsupported P2P op type: {op.op}")
+
+
+def batch_send_recv(
+    send_ops: Optional[Sequence[dist.P2POp]],
+    recv_ops: Optional[Sequence[dist.P2POp]],
+    async_op: bool = True,
+    use_group: bool = False,
+    use_stream: bool = True,
+):
+    """Execute send and recv P2P operations with optional grouping.
+
+    Args:
+        send_ops: Sequence of P2POp objects representing sends.
+        recv_ops: Sequence of P2POp objects representing recvs.
+        async_op: If True, use non-blocking isend/irecv and return Work
+            handles. If False, use blocking send/recv and wait for
+            completion before returning.
+        use_group: If True, use ``torch.distributed.batch_isend_irecv`` to
+            launch the operations as a group. Otherwise, execute them
+            explicitly, interleaving across ranks and using a pool of CUDA
+            streams for concurrency.
+
+    Returns:
+        List of ``torch.distributed.Work`` objects if ``async_op`` is True,
+        otherwise an empty list.
+    """
+
+    send_ops = list(send_ops) if send_ops is not None else []
+    recv_ops = list(recv_ops) if recv_ops is not None else []
+
+    if not send_ops and not recv_ops:
+        return []
+
+    # Grouped execution path using batch_isend_irecv.
+    if use_group:
+        all_ops = _interleave_p2p_ops_by_peer(send_ops + recv_ops)
+        works = dist.batch_isend_irecv(all_ops)
+        if async_op:
+            return works
+        for work in works:
+            work.wait()
+        torch.cuda.synchronize()
+        return []
+
+    # Manual execution path with explicit interleaving and CUDA streams.
+    streams = _get_comm_streams()
+    num_streams = len(streams)
+
+    # Interleave sends and recvs across peers for better overlap.
+    all_ops = _interleave_p2p_ops_by_peer(send_ops + recv_ops)
+    works = []
+
+    # Assign a fixed stream index per peer so that all operations to the
+    # same peer execute on the same CUDA stream, preserving ordering within
+    # that peer while allowing different peers to run concurrently.
+    peers = sorted({op.peer for op in all_ops})
+    peer_to_stream_idx: Dict[int, int] = {}
+    if num_streams > 0:
+        for idx, peer in enumerate(peers):
+            peer_to_stream_idx[peer] = idx % num_streams
+
+    for op in all_ops:
+        current_stream = None
+        if use_stream:
+            stream_idx = peer_to_stream_idx.get(op.peer, 0)
+            current_stream = streams[stream_idx]
+
+        if use_stream and current_stream is not None:
+            # Execute on a dedicated CUDA stream for this peer.
+            with torch.cuda.stream(current_stream):
+                work = _run_p2p_op(op, async_op)
+        else:
+            work = _run_p2p_op(op, async_op)
+
+        if work is not None:
+            works.append(work)
+
+    if async_op:
+        return works
+
+    # For blocking mode, make sure all CUDA work is completed.
+    torch.cuda.synchronize()
+    return []

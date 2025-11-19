@@ -24,7 +24,7 @@ import torch
 import torch.distributed as dist
 
 from awex.reader.weights_reader import WorkerWeightsReader
-from awex.transfer.nccl_comm import nccl_build_recv_ops
+from awex.transfer.nccl_comm import nccl_build_recv_ops, batch_send_recv
 from awex.transfer.transfer_plan import slice_tensor, TransferPlanBuilder
 from awex.util.common import (
     compute_statistics,
@@ -275,14 +275,26 @@ class NCCLWorkerWeightsReader(WorkerWeightsReader):
             **kwargs: Additional keyword arguments (unused)
         """
         logger.info(
-            f"Start to update weights using NCCL for step {step_id} from {len(self.transfer_plan.operations)} "
-            f"ranks({self.send_ranks_sample}) for rank {self.rank_coordinate}."
+            f"Start to update weights using NCCL for step {step_id} from "
+            f"{len(self.transfer_plan.operations)} ranks({self.send_ranks_sample}) "
+            f"for rank {self.rank_coordinate}."
         )
         start_time = time.time()
-        p2p_op_list = nccl_build_recv_ops(self.parameters, self.transfer_plan, self.weights_update_group)
-        reqs = dist.batch_isend_irecv(p2p_op_list)
-        for req in reqs:
-            req.wait()
+
+        # Build receive ops once for logging, then execute them via
+        # batch_send_recv to keep scheduling consistent with the writer.
+        p2p_op_list = nccl_build_recv_ops(
+            self.parameters, self.transfer_plan, self.weights_update_group
+        )
+        logger.info(
+            f"Reader: Built {len(p2p_op_list)} recv operations from "
+            f"{len(self.transfer_plan.operations)} training ranks"
+        )
+
+        logger.info(
+            f"Reader: Executing {len(p2p_op_list)} recv ops via batch_send_recv"
+        )
+        batch_send_recv(send_ops=[], recv_ops=p2p_op_list, async_op=False, use_group=False)
         torch.cuda.synchronize(device=torch.cuda.current_device())
         duration = time.time() - start_time
         logger.info(
