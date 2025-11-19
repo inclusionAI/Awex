@@ -20,7 +20,9 @@ It minimizes iteration latency, ensuring rollout phases consistently use the lat
 
 ## Architecture
 
-TODO
+<div align="center">
+  <img width="85%" alt="Apache Fory logo" src="docs/images/awex_arch.png"><br>
+</div>
 
 ## 📦 Installation
 
@@ -55,7 +57,42 @@ pip install -e ".[dev]"
 
 ## Quick Start
 
-TODO
+Awex is a pure Python library that can be installed and used with one command, supporting Python 3.8 and above.
+
+```bash
+pip install awex
+```
+
+Megatron training engine weight sending example:
+
+```python
+from awex import NCCLWeightsWriter
+from awex.engine.mcore import MegatronEngine
+
+# init
+train_engine = MegatronEngine(awex_config, hf_config, mcore_model)
+writer = NCCLWeightsWriter(train_engine)
+writer.initialize()
+
+# write weights
+writer.write_weights(step_id=1)
+```
+
+SGLang inference engine weight update example:
+
+```python
+from awex import WeightsReader
+from awex.engine.sglang import SGLangEngine
+import sglang as sgl
+
+sgl_engine = sgl.Engine(model_path="xxx", tp_size=2, random_seed=42)
+inference_engine = SGLangEngine(awex_confg, sgl_engine)
+reader = WeightsReader(inference_engine)
+reader.initialize()
+
+# update weights
+reader.update_weights(step_id=1)
+```
 
 ## 🤝 Contributing
 
