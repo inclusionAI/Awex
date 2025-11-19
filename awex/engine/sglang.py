@@ -54,6 +54,7 @@ class SGlangEngine(InferenceEngine):
             logger.info(
                 f"Start to initialize weights exchange reader for {self.rank_coordinate}"
             )
+            self._initialized = True
             self.weights_exchange_reader = get_weights_exchange_reader(self)
             self.weights_exchange_reader.initialize()
             logger.info(
@@ -63,7 +64,6 @@ class SGlangEngine(InferenceEngine):
             logger.info(
                 f"Skip initializing weights exchange reader for {self.rank_coordinate}"
             )
-        self._initialized = True
 
     def update_weights_from_disk(
         self, model_path: str, load_format: Optional[str] = None

@@ -663,9 +663,9 @@ def test_meta_resolver_lite():
         if "memory capacity is unbalanced" in msg:
             pytest.skip(f"SGLang Engine unavailable due to GPU memory layout: {e}")
         raise
-    backend = SGlangEngine(config, sgl_engine)
-    backend.initialize()
-    resolver = InferParamMetaResolver(backend)
+    engine = SGlangEngine(config, sgl_engine)
+    engine.initialize()
+    resolver = InferParamMetaResolver(engine)
     params_meta = resolver.get_parameters_meta()
     print(params_meta)
     data = []
