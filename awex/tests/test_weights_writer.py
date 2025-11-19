@@ -23,6 +23,8 @@ import torch.distributed as dist
 import os
 from concurrent.futures import ThreadPoolExecutor
 import time
+import signal
+import sys
 
 from awex.config import InferenceConfig
 from awex.meta.meta_server import start_meta_server
@@ -152,6 +154,20 @@ def init_process_group(rank, world_size, port):
 
 
 def weights_reader(meta_server_addr):
+    # Set up signal handler for graceful shutdown
+    def cleanup_and_exit(signum, frame):
+        logger.info(f"Received signal {signum}, cleaning up...")
+        try:
+            if dist.is_initialized():
+                dist.destroy_process_group()
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
+        finally:
+            sys.exit(1)
+
+    signal.signal(signal.SIGINT, cleanup_and_exit)
+    signal.signal(signal.SIGTERM, cleanup_and_exit)
+
     os.environ["LOCAL_RANK"] = "0"
     os.environ["DEVICE"] = "0"
     os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
@@ -270,9 +286,30 @@ def weights_reader(meta_server_addr):
     reqs = dist.batch_isend_irecv(p2p_ops)
     logger.info(f"Started batch_isend_irecv with {len(reqs)} requests")
 
+    # Set up a timeout handler
+    class TimeoutError(Exception):
+        pass
+
+    def timeout_handler(signum, frame):
+        raise TimeoutError("Operation timed out")
+
     # Wait for each request with timeout
-    for i, req in enumerate(reqs):
-        req.wait()
+    timeout_seconds = 60  # 60 second timeout
+    old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+
+    try:
+        for i, req in enumerate(reqs):
+            signal.alarm(timeout_seconds)
+            try:
+                req.wait()
+                signal.alarm(0)  # Cancel the alarm
+            except TimeoutError:
+                logger.error(f"Request {i} timed out after {timeout_seconds} seconds")
+                signal.alarm(0)
+                raise
+    finally:
+        signal.alarm(0)  # Make sure alarm is cancelled
+        signal.signal(signal.SIGALRM, old_handler)  # Restore old handler
 
     torch.cuda.synchronize(device=torch.cuda.current_device())
     logger.info("Finished receiving weights")
