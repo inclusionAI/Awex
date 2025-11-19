@@ -18,21 +18,21 @@
 import json
 import os
 from datetime import datetime
-from typing import Dict, List, Any, Tuple
+from typing import Any, Dict, List, Tuple
 
 from torch import distributed as dist
 from transformers import PretrainedConfig
 
 from awex.meta.meta_resolver import ParamMetaResolver, logger
 from awex.meta.weight_meta import (
-    dump_parameters_meta,
-    compute_total_model_size,
     ParameterMeta,
+    compute_total_model_size,
+    dump_parameters_meta,
 )
+from awex.models.registry import get_train_weights_converter
 from awex.sharding.param_sharding import ShardingType
 from awex.sharding.rank_info import RankInfo
 from awex.util.common import to_dict
-from awex.models.registry import get_train_weights_converter
 
 
 class McoreParamMetaResolver(ParamMetaResolver):
@@ -124,7 +124,7 @@ class McoreParamMetaResolver(ParamMetaResolver):
             self._model_arch_name,
             self.hf_config,
             self._rank_info,
-            self._infer_conf
+            self._infer_conf,
         )
         for model in self._mcore_model:
             params_dict = get_mcore_model_parameters(model)

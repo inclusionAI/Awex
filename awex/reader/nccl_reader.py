@@ -16,25 +16,26 @@
 # under the License.
 
 import gc
-from awex import logging
 import os
 import time
 
 import torch
 import torch.distributed as dist
 
+from awex import logging
 from awex.reader.weights_reader import WorkerWeightsReader
-from awex.transfer.nccl_comm import nccl_build_recv_ops, batch_send_recv
-from awex.transfer.transfer_plan import slice_tensor, TransferPlanBuilder
+from awex.transfer.nccl_comm import batch_send_recv, nccl_build_recv_ops
+from awex.transfer.transfer_plan import TransferPlanBuilder
 from awex.util.common import (
     compute_statistics,
+    get_free_port,
+    get_ip_address,
 )
-from awex.util.common import get_ip_address, get_free_port
 from awex.util.gpu import get_gpu_status, print_current_gpu_status
 from awex.util.system_util import count_open_fds
 from awex.util.tensor_util import (
-    ipc_deserialize,
     cuda_ipc_deserialize,
+    ipc_deserialize,
     reconstruct_tensors_from_groups,
 )
 
@@ -294,7 +295,9 @@ class NCCLWorkerWeightsReader(WorkerWeightsReader):
         logger.info(
             f"Reader: Executing {len(p2p_op_list)} recv ops via batch_send_recv"
         )
-        batch_send_recv(send_ops=[], recv_ops=p2p_op_list, blocking=True, use_group=True)
+        batch_send_recv(
+            send_ops=[], recv_ops=p2p_op_list, blocking=True, use_group=True
+        )
         torch.cuda.synchronize(device=torch.cuda.current_device())
         duration = time.time() - start_time
         logger.info(

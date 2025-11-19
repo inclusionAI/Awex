@@ -201,12 +201,18 @@ class McoreToHFWeightConverter:
             return [("input_layernorm.weight", parameter)]
         elif "shared_experts.gate_weight" in name:
             return [("mlp.shared_expert_gate.weight", parameter)]
-        elif "shared_experts.linear_fc1.weight" in name or "shared_experts.linear_fc1.bias" in name:
+        elif (
+            "shared_experts.linear_fc1.weight" in name
+            or "shared_experts.linear_fc1.bias" in name
+        ):
             return [
                 (f"mlp.shared_experts.{name}", param)
                 for name, param in self._convert_linear(name, parameter)
             ]
-        elif "shared_experts.linear_fc2.weight" in name or "shared_experts.linear_fc2.bias" in name:
+        elif (
+            "shared_experts.linear_fc2.weight" in name
+            or "shared_experts.linear_fc2.bias" in name
+        ):
             return [
                 (f"mlp.shared_experts.{name}", param)
                 for name, param in self._convert_linear(name, parameter)
@@ -227,7 +233,12 @@ class McoreToHFWeightConverter:
                 (f"mlp.experts.{expert_id}.{name}", param)
                 for name, param in self._convert_linear(name, parameter)
             ]
-        elif "linear_fc1.weight" in name or "linear_fc2.weight" in name or "linear_fc1.bias" in name or "linear_fc2.bias" in name:
+        elif (
+            "linear_fc1.weight" in name
+            or "linear_fc2.weight" in name
+            or "linear_fc1.bias" in name
+            or "linear_fc2.bias" in name
+        ):
             return [
                 (f"mlp.{name}", param)
                 for name, param in self._convert_linear(name, parameter)
@@ -529,9 +540,7 @@ def transform_mcore_qkv_bias(bias: torch.Tensor):
     return all_query, all_key, all_value
 
 
-def convert_qkv_bias_along_tp_attention(
-    bias: torch.Tensor, infer_atten_tp_size: int
-):
+def convert_qkv_bias_along_tp_attention(bias: torch.Tensor, infer_atten_tp_size: int):
     """
     Convert QKV bias for SGlang format with TP attention.
     Similar to convert_qkv_weight_along_tp_attention but for bias parameters.

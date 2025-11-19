@@ -15,12 +15,12 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from awex import logging
 from dataclasses import dataclass, field
 from typing import List, Tuple
 
 import torch
 
+from awex import logging
 from awex.sharding.param_sharding import (
     ShardingType,
 )

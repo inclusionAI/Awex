@@ -15,9 +15,9 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from awex import logging
 from typing import List
 
+from awex import logging
 from awex.reader.weights_reader import WorkerWeightsReader
 
 logger = logging.getLogger(__name__)

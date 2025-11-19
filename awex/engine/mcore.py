@@ -17,14 +17,13 @@
 
 import os
 import time
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 
 import torch
-
-from awex.engine.core import TrainingEngine
-from awex import logging
 import torch.distributed as dist
 
+from awex import logging
+from awex.engine.core import TrainingEngine
 from awex.writer.weights_writer import get_weights_exchange_writer
 
 logger = logging.getLogger(__name__)

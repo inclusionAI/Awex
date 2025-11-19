@@ -15,11 +15,11 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from typing import Tuple
 import os
-import torch
-
 from dataclasses import dataclass
+from typing import Tuple
+
+import torch
 from transformers import AutoConfig, PretrainedConfig
 
 
@@ -31,8 +31,8 @@ def is_huggingface_available() -> bool:
         True if HuggingFace is accessible, False otherwise
     """
     try:
-        import urllib.request
         import socket
+        import urllib.request
 
         # Set a short timeout to quickly detect network issues
         socket.setdefaulttimeout(5)
@@ -50,9 +50,12 @@ def setup_modelscope_cache():
     """
     try:
         from modelscope.hub.snapshot_download import snapshot_download
+
         return True
     except ImportError:
-        print("Warning: modelscope is not installed. Install it with: pip install modelscope")
+        print(
+            "Warning: modelscope is not installed. Install it with: pip install modelscope"
+        )
         return False
 
 
@@ -105,9 +108,7 @@ def _resolve_local_model_dir_and_config(
             hf_model_dir = local_model_path
         except Exception as e:
             print(f"Failed to download from ModelScope: {e}")
-            print(
-                "Falling back to HuggingFace (may fail if not accessible)..."
-            )
+            print("Falling back to HuggingFace (may fail if not accessible)...")
             hf_model_dir = model_path
     else:
         # Download from HuggingFace (or use local cache if already present)
@@ -150,9 +151,8 @@ def megatron_model_from_hf(
     Note:
         This creates a temporary DCP checkpoint in /tmp/megatron_dcp_<model_name>
     """
-    import sys
-    import tempfile
     import subprocess
+    import sys
 
     hf_model_dir, hf_config = _resolve_local_model_dir_and_config(model_path)
 
@@ -161,7 +161,9 @@ def megatron_model_from_hf(
     print(f"  Hidden size: {hf_config.hidden_size}")
     print(f"  Num layers: {hf_config.num_hidden_layers}")
     print(f"  Num attention heads: {hf_config.num_attention_heads}")
-    print(f"  Num KV heads: {getattr(hf_config, 'num_key_value_heads', hf_config.num_attention_heads)}")
+    print(
+        f"  Num KV heads: {getattr(hf_config, 'num_key_value_heads', hf_config.num_attention_heads)}"
+    )
     print(f"  Vocab size: {hf_config.vocab_size}")
 
     # Create temporary directory for DCP checkpoint
@@ -169,22 +171,27 @@ def megatron_model_from_hf(
     dcp_dir = f"/tmp/megatron_dcp_{model_name}"
     os.makedirs(dcp_dir, exist_ok=True)
 
-    print(f"\nConverting HF weights to Megatron DCP format...")
+    print("\nConverting HF weights to Megatron DCP format...")
     print(f"  Source: {hf_model_dir}")
     print(f"  Target: {dcp_dir}")
 
     # Check if checkpoint already exists to skip conversion
-    if os.path.exists(f"{dcp_dir}/iter_0000001") or os.path.exists(f"{dcp_dir}/latest_checkpointed_iteration.txt"):
+    if os.path.exists(f"{dcp_dir}/iter_0000001") or os.path.exists(
+        f"{dcp_dir}/latest_checkpointed_iteration.txt"
+    ):
         print(f"DCP checkpoint already exists at {dcp_dir}, skipping conversion")
     else:
         # Find convert.py in Megatron-LM (assume it's on Python path)
         try:
             import megatron.training
+
             # Try to get the path from a submodule that has __file__
             megatron_module_path = megatron.training.__file__
             if megatron_module_path:
                 # Go up from megatron/training/__init__.py to Megatron-LM root
-                megatron_root = os.path.dirname(os.path.dirname(os.path.dirname(megatron_module_path)))
+                megatron_root = os.path.dirname(
+                    os.path.dirname(os.path.dirname(megatron_module_path))
+                )
             else:
                 raise RuntimeError("Cannot determine Megatron-LM path from module")
         except Exception as e:
@@ -204,20 +211,35 @@ def megatron_model_from_hf(
         print(f"Using Megatron-LM from: {megatron_root}")
 
         # Determine tokenizer model path
-        tokenizer_model = f"{hf_model_dir}/tokenizer.model" if os.path.exists(f"{hf_model_dir}/tokenizer.model") else hf_model_dir
+        tokenizer_model = (
+            f"{hf_model_dir}/tokenizer.model"
+            if os.path.exists(f"{hf_model_dir}/tokenizer.model")
+            else hf_model_dir
+        )
 
         convert_cmd = [
-            sys.executable, convert_script,
-            "--model-type", "GPT",
-            "--loader", "llama_mistral",
-            "--saver", "core",
-            "--model-size", "qwen2.5",
-            "--checkpoint-type", "hf",
-            "--load-dir", hf_model_dir,
-            "--save-dir", dcp_dir,
-            "--tokenizer-model", tokenizer_model,
-            "--target-tensor-parallel-size", "1",
-            "--target-pipeline-parallel-size", "1",
+            sys.executable,
+            convert_script,
+            "--model-type",
+            "GPT",
+            "--loader",
+            "llama_mistral",
+            "--saver",
+            "core",
+            "--model-size",
+            "qwen2.5",
+            "--checkpoint-type",
+            "hf",
+            "--load-dir",
+            hf_model_dir,
+            "--save-dir",
+            dcp_dir,
+            "--tokenizer-model",
+            tokenizer_model,
+            "--target-tensor-parallel-size",
+            "1",
+            "--target-pipeline-parallel-size",
+            "1",
             "--bf16",
         ]
 
@@ -228,7 +250,7 @@ def megatron_model_from_hf(
             print(f"Conversion failed with return code: {result.returncode}")
             print(f"STDOUT:\n{result.stdout}")
             print(f"STDERR:\n{result.stderr}")
-            raise RuntimeError(f"Failed to convert HF model to DCP format")
+            raise RuntimeError("Failed to convert HF model to DCP format")
 
         print(f"Conversion stdout:\n{result.stdout}")
         if result.stderr:
@@ -260,17 +282,18 @@ def initialize_megatron_and_load_checkpoint(dcp_dir, hf_config, hf_model_dir):
 
     # Add Megatron-LM root to path for model_provider and gpt_builders imports
     import megatron.training
+
     megatron_module_path = megatron.training.__file__
-    megatron_root = os.path.dirname(os.path.dirname(os.path.dirname(megatron_module_path)))
+    megatron_root = os.path.dirname(
+        os.path.dirname(os.path.dirname(megatron_module_path))
+    )
     if megatron_root not in sys.path:
         sys.path.insert(0, megatron_root)
 
-    from megatron.training import get_args
-    from megatron.training.arguments import parse_args, validate_args
-    from megatron.training.global_vars import set_args, set_global_variables
     from megatron.core import mpu
+    from megatron.training.arguments import parse_args, validate_args
     from megatron.training.checkpointing import load_checkpoint
-    from megatron.core.models.gpt import GPTModel
+    from megatron.training.global_vars import set_global_variables
 
     # Honor DEVICE env before any Megatron CUDA work so that Megatron
     # initializes directly on the requested GPU (e.g., device 1 for
@@ -281,54 +304,60 @@ def initialize_megatron_and_load_checkpoint(dcp_dir, hf_config, hf_model_dir):
         if device_env is not None:
             try:
                 device_id = int(device_env)
-                print(f"Setting torch CUDA device to {device_id} based on DEVICE={device_env}")
+                print(
+                    f"Setting torch CUDA device to {device_id} based on DEVICE={device_env}"
+                )
                 torch.cuda.set_device(device_id)
             except Exception as e:
-                print(f"Warning: Failed to set CUDA device from DEVICE={device_env}: {e}")
+                print(
+                    f"Warning: Failed to set CUDA device from DEVICE={device_env}: {e}"
+                )
 
     # Parse default args first
     args = parse_args(extra_args_provider=None, ignore_unknown_args=True)
 
     # Create config dict with values we want to override
-    num_kv_heads = getattr(hf_config, 'num_key_value_heads', hf_config.num_attention_heads)
-    rope_theta = int(getattr(hf_config, 'rope_theta', 10000))
+    num_kv_heads = getattr(
+        hf_config, "num_key_value_heads", hf_config.num_attention_heads
+    )
+    rope_theta = int(getattr(hf_config, "rope_theta", 10000))
 
     config_dict = {
-        'num_layers': hf_config.num_hidden_layers,
-        'hidden_size': hf_config.hidden_size,
-        'num_attention_heads': hf_config.num_attention_heads,
-        'seq_length': 4096,
-        'max_position_embeddings': getattr(hf_config, 'max_position_embeddings', 4096),
-        'micro_batch_size': 1,
-        'global_batch_size': 1,
-        'tensor_model_parallel_size': 1,
-        'encoder_tensor_model_parallel_size': 1,  # Must match tensor_model_parallel_size
-        'pipeline_model_parallel_size': 1,
-        'masked_softmax_fusion': False,
-        'bias_gelu_fusion': False,
-        'bias_dropout_fusion': False,
-        'gradient_accumulation_fusion': False,
-        'async_tensor_model_parallel_allreduce': False,  # Disable to avoid CUDA_DEVICE_MAX_CONNECTIONS requirement
-        'bf16': True,
-        'normalization': 'RMSNorm',
-        'position_embedding_type': 'rope',
-        'swiglu': True,
-        'untie_embeddings_and_output_weights': True,
-        'disable_bias_linear': True,
-        'position_embedding': False,
-        'use_rotary_position_embeddings': True,
-        'rotary_percent': 1.0,
-        'rotary_base': rope_theta,
-        'num_query_groups': num_kv_heads,
-        'load': dcp_dir,
-        'no_load_optim': True,
-        'no_load_rng': True,
-        'transformer_impl': 'transformer_engine',  # Use TE which supports RMSNorm
-        'num_experts': 0,
-        'rotary_seq_len_interpolation_factor': 1.0,
-        'padded_vocab_size': hf_config.vocab_size,
-        'tokenizer_type': 'HuggingFaceTokenizer',
-        'tokenizer_model': hf_model_dir,
+        "num_layers": hf_config.num_hidden_layers,
+        "hidden_size": hf_config.hidden_size,
+        "num_attention_heads": hf_config.num_attention_heads,
+        "seq_length": 4096,
+        "max_position_embeddings": getattr(hf_config, "max_position_embeddings", 4096),
+        "micro_batch_size": 1,
+        "global_batch_size": 1,
+        "tensor_model_parallel_size": 1,
+        "encoder_tensor_model_parallel_size": 1,  # Must match tensor_model_parallel_size
+        "pipeline_model_parallel_size": 1,
+        "masked_softmax_fusion": False,
+        "bias_gelu_fusion": False,
+        "bias_dropout_fusion": False,
+        "gradient_accumulation_fusion": False,
+        "async_tensor_model_parallel_allreduce": False,  # Disable to avoid CUDA_DEVICE_MAX_CONNECTIONS requirement
+        "bf16": True,
+        "normalization": "RMSNorm",
+        "position_embedding_type": "rope",
+        "swiglu": True,
+        "untie_embeddings_and_output_weights": True,
+        "disable_bias_linear": True,
+        "position_embedding": False,
+        "use_rotary_position_embeddings": True,
+        "rotary_percent": 1.0,
+        "rotary_base": rope_theta,
+        "num_query_groups": num_kv_heads,
+        "load": dcp_dir,
+        "no_load_optim": True,
+        "no_load_rng": True,
+        "transformer_impl": "transformer_engine",  # Use TE which supports RMSNorm
+        "num_experts": 0,
+        "rotary_seq_len_interpolation_factor": 1.0,
+        "padded_vocab_size": hf_config.vocab_size,
+        "tokenizer_type": "HuggingFaceTokenizer",
+        "tokenizer_model": hf_model_dir,
     }
 
     # Override default args with our config
@@ -344,17 +373,21 @@ def initialize_megatron_and_load_checkpoint(dcp_dir, hf_config, hf_model_dir):
     # Use the manual approach from Megatron's checkpoint loader
     mpu.set_tensor_model_parallel_world_size(args.tensor_model_parallel_size)
     mpu.set_pipeline_model_parallel_world_size(args.pipeline_model_parallel_size)
-    mpu.set_virtual_pipeline_model_parallel_world_size(args.virtual_pipeline_model_parallel_size or 1)
+    mpu.set_virtual_pipeline_model_parallel_world_size(
+        args.virtual_pipeline_model_parallel_size or 1
+    )
     mpu.set_tensor_model_parallel_rank(0)
     mpu.set_pipeline_model_parallel_rank(0)
 
     # Initialize CUDA RNG tracker for model parallel
     from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
+
     model_parallel_cuda_manual_seed(args.seed)
 
     # Also load fused kernels if needed
     try:
         from megatron.legacy import fused_kernels
+
         fused_kernels.load(args)
     except Exception as e:
         print(f"Warning: Could not load fused kernels: {e}")
@@ -370,45 +403,46 @@ def initialize_megatron_and_load_checkpoint(dcp_dir, hf_config, hf_model_dir):
     print(f"Loading checkpoint from {dcp_dir}...")
     # Disable weights_only mode for checkpoint loading since we trust our own converted checkpoint
     # PyTorch 2.6 changed the default to weights_only=True which requires allowlisting all custom types
-    os.environ['TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD'] = '1'
+    os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
     try:
         iteration = load_checkpoint([model], None, None)
         print(f"Loaded checkpoint at iteration {iteration}")
     except Exception as e:
         print(f"Warning: Failed to load checkpoint: {str(e)[:100]}")
-        print("Using randomly initialized model instead (sufficient for testing weights writer)")
+        print(
+            "Using randomly initialized model instead (sufficient for testing weights writer)"
+        )
 
     return model
 
 
 def build_tokenizer(args):
     from transformers import AutoTokenizer
+
     tokenizer = AutoTokenizer.from_pretrained(
-        args.tokenizer_model, padding_side='right', use_fast=False, trust_remote_code=True)
+        args.tokenizer_model,
+        padding_side="right",
+        use_fast=False,
+        trust_remote_code=True,
+    )
     tokenizer.pad_token_id = 0
-    extra_vocab_size = getattr(args, 'extra_vocab_size', 0)
+    extra_vocab_size = getattr(args, "extra_vocab_size", 0)
     args.padded_vocab_size = tokenizer.vocab_size + extra_vocab_size
 
 
-def qwen2_model_provider(
-        pre_process=True, post_process=True
-):
-    from megatron.core.transformer import TransformerConfig
+def qwen2_model_provider(pre_process=True, post_process=True):
     from megatron.core.models.gpt import GPTModel
     from megatron.core.models.gpt.gpt_layer_specs import (
-        get_gpt_decoder_block_spec,
         get_gpt_layer_local_spec,
         get_gpt_layer_with_transformer_engine_spec,
-        get_gpt_mtp_block_spec,
     )
-    from megatron.core.transformer.spec_utils import import_module
-    from megatron.training import get_args, get_timers, print_rank_0
+    from megatron.core.transformer import TransformerConfig
+    from megatron.training import get_args
     from megatron.training.arguments import core_transformer_config_from_args
-    from megatron.training.yaml_arguments import core_transformer_config_from_yaml
 
     @dataclass
     class Qwen2TransformerConfig(TransformerConfig):
-        transformer_impl: str = 'transformer_engine'
+        transformer_impl: str = "transformer_engine"
         moe_ffn_hidden_size: int = None
         shared_moe_ffn_hidden_size: int = None
         enable_shared_expert: bool = False

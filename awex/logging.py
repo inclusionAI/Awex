@@ -15,8 +15,8 @@
 # specific language governing permissions and limitations
 # under the License.
 
-import sys
 import os
+import sys
 import traceback
 from datetime import datetime
 from enum import IntEnum

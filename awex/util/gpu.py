@@ -17,10 +17,9 @@
 
 import subprocess
 
-from awex import logging
-
 import torch
 
+from awex import logging
 from awex.util.common import pretty_bytes
 
 logger = logging.getLogger(__name__)

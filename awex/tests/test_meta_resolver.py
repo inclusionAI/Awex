@@ -1,18 +1,19 @@
 import json
-import pytest
-import torch
 from unittest.mock import MagicMock
 
+import pytest
+import torch
+
+from awex.meta.infer_meta_resolver import InferParamMetaResolver
 from awex.meta.meta_resolver import (
     ParameterMeta,
-    ParameterShardMeta,
     ParameterReplicaMeta,
+    ParameterShardMeta,
     ShardingType,
 )
-from awex.meta.infer_meta_resolver import InferParamMetaResolver
 from awex.sharding.param_sharding import RankInfo
-from awex.util.common import to_dict
 from awex.tests.test_utils import get_local_model_dir
+from awex.util.common import to_dict
 
 MODEL_PATH = "DeepSeek-R1-Distill-Qwen-1.5B"
 MODEL_ARCH_NAME = "Qwen2ForCausalLM"
@@ -599,8 +600,9 @@ def test_meta_resolver_with_real_engine():
     # Check if model exists locally or can be downloaded
     model_path = "Qwen/Qwen2-1.5B"
     config = create_real_engine_config(model_path)
-    from awex.engine.sglang import SGlangEngine, extract_sgl_config
     import sglang as sgl
+
+    from awex.engine.sglang import SGlangEngine, extract_sgl_config
 
     try:
         sgl_engine = sgl.Engine(**extract_sgl_config(config), random_seed=42)
@@ -638,6 +640,7 @@ def test_meta_resolver_with_real_engine():
             assert all(isinstance(s, ParameterShardMeta) for s in replica.shards)
     sgl_engine.shutdown()
 
+
 @pytest.mark.skipif(
     not torch.cuda.is_available(),
     reason="CUDA are required for lite meta resolver test.",
@@ -652,9 +655,9 @@ def test_meta_resolver_lite():
     except RuntimeError as e:
         pytest.skip(f"Meta server unavailable in test environment: {e}")
 
-    from awex.engine.sglang import SGlangEngine
     import sglang as sgl
-    from awex.engine.sglang import extract_sgl_config
+
+    from awex.engine.sglang import SGlangEngine, extract_sgl_config
 
     try:
         sgl_engine = sgl.Engine(**extract_sgl_config(config), random_seed=42)

@@ -15,15 +15,16 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from awex import logging
-from typing import Callable, Dict, List, Tuple, Union, Iterable
+import io
+import multiprocessing as mp
+from multiprocessing.reduction import ForkingPickler
+from typing import Callable, Dict, Iterable, List, Tuple, Union
 
 import torch
 from packaging import version
 from torch.multiprocessing import reductions
-from multiprocessing.reduction import ForkingPickler
-import io
-import multiprocessing as mp
+
+from awex import logging
 
 mp.current_process().authkey = b"ipc_serialize_cpu_tensor_authkey"
 

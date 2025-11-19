@@ -169,8 +169,9 @@ class SGlangToHFWeightConverter:
         """
         converted_params = []
         # Get number of router experts from config
-        num_router_experts = getattr(self.model_config, "num_experts", None) or getattr(
-            self.model_config, "n_routed_experts"
+        num_router_experts = (
+            getattr(self.model_config, "num_experts", None)
+            or self.model_config.n_routed_experts
         )
         if "expert_bias" in name:
             return [(name, parameter)]

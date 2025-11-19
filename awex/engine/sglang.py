@@ -16,13 +16,12 @@
 # under the License.
 
 import time
-from typing import Optional, List, Dict, Any, Union
+from typing import Any, Dict, List, Optional, Union
 
+from awex import logging
 from awex.config import InferenceConfig
 from awex.engine.core import InferenceEngine
-from awex import logging
 from awex.reader.weights_reader import get_weights_exchange_reader
-
 from awex.util.gpu import get_gpu_status
 
 logger = logging.getLogger(__name__)

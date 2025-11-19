@@ -14,19 +14,18 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-from typing import Dict, List, Optional, Sequence
-
-from awex import logging
 import math
 import os
 import subprocess
 import time
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import Future, ThreadPoolExecutor
+from typing import Dict, List, Optional, Sequence
 
 import torch
 import torch.distributed as dist
-from awex.transfer.transfer_plan import slice_tensor
 
+from awex import logging
+from awex.transfer.transfer_plan import slice_tensor
 
 logger = logging.getLogger(__name__)
 
@@ -382,7 +381,7 @@ def execute_p2p_op_list(p2p_op_list, stage: str, weights_update_group):
 
 @torch.no_grad()
 def nccl_build_send_ops(parameters, transfer_plan, weights_update_group, copy_rank):
-    send_progress = {rank: 0 for rank in transfer_plan.operations.keys()}
+    send_progress = dict.fromkeys(transfer_plan.operations.keys(), 0)
     unfinished_ranks = set(transfer_plan.operations.keys())
     p2p_op_list = []
     copy_op_list = []
@@ -418,9 +417,11 @@ def nccl_build_send_ops(parameters, transfer_plan, weights_update_group, copy_ra
     return p2p_op_list, copy_op_list
 
 
-def nccl_build_recv_ops(parameters: Dict[str, torch.Tensor], transfer_plan, weights_update_group):
+def nccl_build_recv_ops(
+    parameters: Dict[str, torch.Tensor], transfer_plan, weights_update_group
+):
     p2p_op_list = []
-    recv_progress = {rank: 0 for rank in transfer_plan.operations.keys()}
+    recv_progress = dict.fromkeys(transfer_plan.operations.keys(), 0)
     unfinished_ranks = set(transfer_plan.operations.keys())
     while len(unfinished_ranks) > 0:
         finished_ranks = set()
@@ -464,7 +465,7 @@ def _interleave_p2p_ops_by_peer(ops: Sequence[dist.P2POp]) -> List[dist.P2POp]:
         by_peer.setdefault(op.peer, []).append(op)
 
     peers = sorted(by_peer.keys())
-    progress = {peer: 0 for peer in peers}
+    progress = dict.fromkeys(peers, 0)
     remaining = sum(len(v) for v in by_peer.values())
     interleaved: List[dist.P2POp] = []
 

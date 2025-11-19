@@ -17,13 +17,13 @@
 
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from awex import logging
 from typing import Any, Dict, List, Tuple
 
+from awex import logging
 from awex.meta.weight_meta import (
     ParameterMeta,
-    ParameterShardMeta,
     ParameterReplicaMeta,
+    ParameterShardMeta,
 )
 from awex.sharding.param_sharding import (
     ShardingType,

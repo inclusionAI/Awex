@@ -15,16 +15,16 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from awex import logging
 import os
 import pickle
 import threading
 import time
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any
+from typing import Any, Dict, List
 
 import torch
 
+from awex import logging
 from awex.meta.infer_meta_resolver import InferParamMetaResolver
 from awex.meta.meta_resolver import (
     ParameterMeta,
@@ -35,11 +35,11 @@ from awex.sharding.param_sharding import (
     get_rank_info_extractor,
 )
 from awex.util.common import (
-    compute_statistics,
     check_train_infer_params_meta,
+    compute_statistics,
     simple_hf_config,
+    stripped_env_vars,
 )
-from awex.util.common import stripped_env_vars
 from awex.util.tensor_util import (
     check_and_log_nan_values,
     compare_and_log_tensor_differences,
@@ -99,15 +99,9 @@ class WeightsReader(WeightExchangeReader):
         self.infer_world_size = self.num_engines * self.tp_size * self.pp_size
         self.validated_steps = 0
         self.start_step = -1
-        self.weights_validation_steps = (
-            config.weights_validation_steps
-        )
-        self.validate_weights_every_n_steps = (
-            config.validate_weights_every_n_steps
-        )
-        self.dump_weights_list_for_validation = (
-            config.dump_weights_list_for_validation
-        )
+        self.weights_validation_steps = config.weights_validation_steps
+        self.validate_weights_every_n_steps = config.validate_weights_every_n_steps
+        self.dump_weights_list_for_validation = config.dump_weights_list_for_validation
         self.dump_weights_dir_for_validation = (
             config.dump_weights_dir_for_validation or os.getcwd()
         )

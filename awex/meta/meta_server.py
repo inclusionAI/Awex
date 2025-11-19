@@ -15,28 +15,28 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from awex import logging
 import asyncio
-import threading
-import pickle
 import json
+import multiprocessing
+import os
+import pickle
+import random
+import signal
+import socket
+import threading
 import time
 import traceback
 from typing import Any, Dict, Tuple, Union
-from aiohttp import web
-import socket
+
 import requests
+from aiohttp import web
 
-import os
-import multiprocessing
-import signal
-import random
-
+from awex import logging
 from awex.util.common import (
-    to_binary,
     from_binary,
-    get_ip_address,
     get_free_port,
+    get_ip_address,
+    to_binary,
 )
 
 logger = logging.getLogger(__name__)

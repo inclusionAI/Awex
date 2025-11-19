@@ -15,24 +15,25 @@
 # specific language governing permissions and limitations
 # under the License.
 
-import pytest
-import torch
 from typing import Tuple
 
-from awex.transfer.transfer_plan import (
-    TransferPlanBuilder,
-    CommunicationOperation,
-    TransferPlan,
-    ShardOffset,
-    OverlapRegion,
-    slice_tensor,
-)
+import pytest
+import torch
+
 from awex.meta.meta_resolver import (
     ParameterMeta,
-    ParameterShardMeta,
     ParameterReplicaMeta,
+    ParameterShardMeta,
 )
 from awex.sharding.param_sharding import ShardingType
+from awex.transfer.transfer_plan import (
+    CommunicationOperation,
+    OverlapRegion,
+    ShardOffset,
+    TransferPlan,
+    TransferPlanBuilder,
+    slice_tensor,
+)
 
 
 class TestTransferPlanBuilder:

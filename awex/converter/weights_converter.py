@@ -15,8 +15,9 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from awex import logging
 import torch
+
+from awex import logging
 
 logger = logging.getLogger(__name__)
 

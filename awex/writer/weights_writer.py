@@ -16,7 +16,6 @@
 # under the License.
 
 import gc
-from awex import logging
 import os
 import threading
 import time
@@ -26,6 +25,7 @@ from typing import List
 import torch
 import torch.distributed as dist
 
+from awex import logging
 from awex.converter.mcore_converter import get_mcore_model_parameters
 from awex.meta.meta_resolver import (
     ParameterMeta,
@@ -37,11 +37,11 @@ from awex.sharding.param_sharding import (
     get_rank_info_extractor,
 )
 from awex.util.common import (
-    compute_statistics,
     check_train_infer_params_meta,
+    compute_statistics,
+    from_binary,
+    stripped_env_vars,
 )
-from awex.util.common import from_binary
-from awex.util.common import stripped_env_vars
 from awex.util.gpu import get_gpu_status
 from awex.util.tensor_util import check_and_log_nan_values
 
@@ -193,7 +193,7 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
             self.model_arch_name,
             self.hf_config,
             self.rank_info,
-            self.infer_conf
+            self.infer_conf,
         )
         logger.info("Start to get number of inference engines from meta server")
         self.num_infer_engines = self.meta_server_client.get_object(

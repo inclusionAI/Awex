@@ -15,8 +15,8 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from dataclasses import field, dataclass
-from typing import Dict, Optional, Literal, List, Any
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Literal, Optional
 
 
 @dataclass

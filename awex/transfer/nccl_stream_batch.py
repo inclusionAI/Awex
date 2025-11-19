@@ -15,19 +15,19 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from awex import logging
 import math
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import Future, ThreadPoolExecutor
 
 import torch
 import torch.distributed as dist
 
+from awex import logging
 from awex.transfer.nccl_comm import (
+    detect_hang,
     execute_tensors_to_copy,
     validate_rank_mappings,
-    detect_hang,
 )
 from awex.transfer.transfer_plan import slice_tensor
 
@@ -42,7 +42,9 @@ class NcclColocateStreamBatchTransport:
         self.transfer_rank = transfer_rank
         self.world_size = world_size
         # Initialize a fixed pool of CUDA streams
-        self._stream_pool = [torch.cuda.Stream() for _ in range(min(self.MAX_STREAMS, world_size))]
+        self._stream_pool = [
+            torch.cuda.Stream() for _ in range(min(self.MAX_STREAMS, world_size))
+        ]
 
     def update_weights_in_colocate_mode(
         self,
@@ -61,9 +63,11 @@ class NcclColocateStreamBatchTransport:
         async_op=True,
         **kwargs,
     ):
-        logger.info(f"Using RECURSIVE PARTITION batch_isend_irecv with O(log N) rounds")
+        logger.info("Using RECURSIVE PARTITION batch_isend_irecv with O(log N) rounds")
         task_id = f"{rank_coordinate}-{step_id}"
-        validate_rank_mappings(train_to_infer_device_mapping, infer_to_train_device_mapping)
+        validate_rank_mappings(
+            train_to_infer_device_mapping, infer_to_train_device_mapping
+        )
         start_time = time.time()
 
         # Get send/recv operations dict
@@ -71,8 +75,10 @@ class NcclColocateStreamBatchTransport:
         recv_ops = dict(recv_transfer_plan.operations)
         num_sends = sum(len(ops) for ops in send_ops.values())
         num_recvs = sum(len(ops) for ops in recv_ops.values())
-        logger.info(f"Start to execute weights update for {task_id}, "
-                    f"num_sends {num_sends}, num_recvs {num_recvs}")
+        logger.info(
+            f"Start to execute weights update for {task_id}, "
+            f"num_sends {num_sends}, num_recvs {num_recvs}"
+        )
 
         # Build P2P operations with sliced tensors
         all_send_p2p_ops = {}  # peer_rank -> List[(plan_op, p2p_op)]
@@ -88,16 +94,22 @@ class NcclColocateStreamBatchTransport:
                 # Self-copy operations
                 for op in ops:
                     send_tensor = send_parameters[op.send_shard_meta.name]
-                    tensor_sliced = slice_tensor(send_tensor, op, True, slice_context=train_slice_context)
+                    tensor_sliced = slice_tensor(
+                        send_tensor, op, True, slice_context=train_slice_context
+                    )
                     tensors_to_copy.append(tensor_sliced)
             else:
                 # P2P send operations
                 p2p_ops = []
                 for op in ops:
                     send_tensor = send_parameters[op.send_shard_meta.name]
-                    tensor_sliced = slice_tensor(send_tensor, op, True, slice_context=train_slice_context)
+                    tensor_sliced = slice_tensor(
+                        send_tensor, op, True, slice_context=train_slice_context
+                    )
                     # Use mapped inference rank for P2P operation
-                    recv_rank = train_to_infer_device_mapping.get(op.recv_rank, op.recv_rank)
+                    recv_rank = train_to_infer_device_mapping.get(
+                        op.recv_rank, op.recv_rank
+                    )
                     p2p_op = dist.P2POp(
                         dist.isend if async_op else dist.send,
                         tensor_sliced.clone(),
@@ -133,7 +145,7 @@ class NcclColocateStreamBatchTransport:
                 tensors_to_copy,
                 recv_transfer_plan.operations[send_rank],
                 recv_parameters,
-                f"tensor copy for {task_id}"
+                f"tensor copy for {task_id}",
             )
         else:
             logger.info(f"No tensors to copy for {task_id}")
@@ -160,8 +172,9 @@ class NcclColocateStreamBatchTransport:
         torch.cuda.synchronize()
         future.set_result(True)
         duration = time.time() - start_time
-        logger.info(f"Finished executing weights update for {task_id}, took {duration:.4f} seconds")
-
+        logger.info(
+            f"Finished executing weights update for {task_id}, took {duration:.4f} seconds"
+        )
 
     def execute_recursive_partition_stream_transfer(
         self,
@@ -193,9 +206,11 @@ class NcclColocateStreamBatchTransport:
         num_rounds = int(math.log2(world_size))
         prefix = f"[{os.getpid()}] [{rank_coordinate}] [step {step_id}]"
         start_time = time.time()
-        logger.info(f"{prefix} Starting recursive partition transfer with {num_rounds} rounds")
+        logger.info(
+            f"{prefix} Starting recursive partition transfer with {num_rounds} rounds"
+        )
         for round_idx in range(num_rounds):
-            partition_size = world_size // (2 ** round_idx)
+            partition_size = world_size // (2**round_idx)
             half = partition_size // 2
 
             # Determine my partition base (which partition I'm in)
@@ -212,33 +227,49 @@ class NcclColocateStreamBatchTransport:
             else:
                 other_half_start = partition_base
                 other_half_end = partition_base + half
-            logger.info(f"{prefix} Round {round_idx}: partition_size={partition_size}, "
-                       f"partition=[{partition_base}, {partition_end}), half={half}, "
-                       f"in_first_half={in_first_half}, other_half=[{other_half_start}, {other_half_end})")
+            logger.info(
+                f"{prefix} Round {round_idx}: partition_size={partition_size}, "
+                f"partition=[{partition_base}, {partition_end}), half={half}, "
+                f"in_first_half={in_first_half}, other_half=[{other_half_start}, {other_half_end})"
+            )
 
             round_start = time.time()
             # === PHASE 1: First half sends to second half, second half receives from first half ===
             if in_first_half:
                 # Execute all send operations to ranks in the other half with concurrent execution
-                num_ops = self._execute_ops_concurrent(all_send_p2p_ops, range(other_half_start, other_half_end))
+                num_ops = self._execute_ops_concurrent(
+                    all_send_p2p_ops, range(other_half_start, other_half_end)
+                )
             else:
                 # Execute all recv operations from ranks in the other half with concurrent execution
-                num_ops = self._execute_ops_concurrent(all_recv_p2p_ops, range(other_half_start, other_half_end))
-            logger.info(f"{prefix} Round {round_idx} Phase 1: enqueued {num_ops} "
-                       f"{'sends' if in_first_half else 'recvs'}")
+                num_ops = self._execute_ops_concurrent(
+                    all_recv_p2p_ops, range(other_half_start, other_half_end)
+                )
+            logger.info(
+                f"{prefix} Round {round_idx} Phase 1: enqueued {num_ops} "
+                f"{'sends' if in_first_half else 'recvs'}"
+            )
             # === PHASE 2: First half receives from second half, second half sends to first half ===
             if in_first_half:
                 # Execute all recv operations from ranks in the other half with concurrent execution
-                num_ops2 = self._execute_ops_concurrent(all_recv_p2p_ops, range(other_half_start, other_half_end))
+                num_ops2 = self._execute_ops_concurrent(
+                    all_recv_p2p_ops, range(other_half_start, other_half_end)
+                )
             else:
                 # Execute all send operations to ranks in the other half with concurrent execution
-                num_ops2 = self._execute_ops_concurrent(all_send_p2p_ops, range(other_half_start, other_half_end))
-            logger.info(f"{prefix} Round {round_idx} Phase 2: enqueued {num_ops2} "
-                       f"{'recvs' if in_first_half else 'sends'}")
+                num_ops2 = self._execute_ops_concurrent(
+                    all_send_p2p_ops, range(other_half_start, other_half_end)
+                )
+            logger.info(
+                f"{prefix} Round {round_idx} Phase 2: enqueued {num_ops2} "
+                f"{'recvs' if in_first_half else 'sends'}"
+            )
             round_duration = time.time() - round_start
-            logger.info(f"[{os.getpid()}] Round {round_idx} completed: "
-                       f"phase1={num_ops} ops, phase2={num_ops2} ops, "
-                       f"took {round_duration:.4f}s")
+            logger.info(
+                f"[{os.getpid()}] Round {round_idx} completed: "
+                f"phase1={num_ops} ops, phase2={num_ops2} ops, "
+                f"took {round_duration:.4f}s"
+            )
         torch.cuda.synchronize()
         duration = time.time() - start_time
         logger.info(f"{prefix} All {num_rounds} rounds completed in {duration:.4f}s")
@@ -296,7 +327,9 @@ class NcclColocateStreamBatchTransport:
                     stream_idx = peer_to_stream_idx[peer_rank]
                     stream = self._stream_pool[stream_idx]
                     with torch.cuda.stream(stream):
-                        result = p2p_op.op(p2p_op.tensor, p2p_op.peer, group=p2p_op.group)
+                        result = p2p_op.op(
+                            p2p_op.tensor, p2p_op.peer, group=p2p_op.group
+                        )
                         if p2p_op.op is dist.isend or p2p_op.op is dist.irecv:
                             work_handles.append(result)
                     total_ops += 1

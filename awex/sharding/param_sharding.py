@@ -16,8 +16,8 @@
 # under the License.
 
 from enum import Enum
-from awex import logging
 
+from awex import logging
 from awex.sharding.rank_info import RankInfo
 
 logger = logging.getLogger(__name__)

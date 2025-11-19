@@ -15,9 +15,11 @@
 # specific language governing permissions and limitations
 # under the License.
 
-import torch
-import pytest
 import multiprocessing as mp
+
+import pytest
+import torch
+
 from awex.util.tensor_util import (
     group_tensors_by_shape_and_dtype,
     reconstruct_tensors_from_groups,

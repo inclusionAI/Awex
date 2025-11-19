@@ -15,16 +15,18 @@
 # specific language governing permissions and limitations
 # under the License.
 
-import math
-import struct
-from typing import List
-import os
-from enum import Enum
 import json
-from awex import logging
-import socket
-import torch
+import math
+import os
 import pickle
+import socket
+import struct
+from enum import Enum
+from typing import List
+
+import torch
+
+from awex import logging
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +41,8 @@ def configure_logging(level=logging.INFO, force=True):
 
 def ensure_divisibility(numerator, denominator):
     """Ensure that numerator is divisible by the denominator."""
-    assert numerator % denominator == 0, "{} is not divisible by {}".format(
-        numerator, denominator
+    assert numerator % denominator == 0, (
+        f"{numerator} is not divisible by {denominator}"
     )
 
 

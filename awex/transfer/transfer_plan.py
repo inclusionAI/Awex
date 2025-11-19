@@ -15,19 +15,21 @@
 # specific language governing permissions and limitations
 # under the License.
 
+import json
 import os
 import time
-import torch
-from awex import logging
-from typing import List, Dict, Tuple, Any
 from dataclasses import dataclass
+from typing import Any, Dict, List, Tuple
+
+import torch
+
+from awex import logging
 from awex.meta.meta_resolver import (
     ParameterMeta,
-    ParameterShardMeta,
     ParameterReplicaMeta,
+    ParameterShardMeta,
 )
 from awex.util.common import to_dict
-import json
 
 logger = logging.getLogger(__name__)
 

@@ -15,16 +15,19 @@
 # specific language governing permissions and limitations
 # under the License.
 
-import torch
-from unittest.mock import patch
 import multiprocessing as mp
 import os
+from unittest.mock import patch
+
 import pytest
-from awex.util.tensor_util import check_and_log_nan_values
-from awex.util.tensor_util import compare_and_log_tensor_differences
-from awex.util.process_group import setup_batch_isend_irecv
-from awex.util.process_group import init_weights_update_group
+import torch
+
 from awex.util.common import get_free_port
+from awex.util.process_group import init_weights_update_group, setup_batch_isend_irecv
+from awex.util.tensor_util import (
+    check_and_log_nan_values,
+    compare_and_log_tensor_differences,
+)
 
 mp.set_start_method("spawn", force=True)
 

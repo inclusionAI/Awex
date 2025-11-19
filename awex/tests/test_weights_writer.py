@@ -16,28 +16,27 @@
 # under the License.
 
 import multiprocessing as mp
+import os
+import signal
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import torch
 import torch.distributed as dist
-import os
-from concurrent.futures import ThreadPoolExecutor
-import time
-import signal
-import sys
 
+from awex import logging
 from awex.config import InferenceConfig
-from awex.meta.meta_server import start_meta_server
-from awex.meta.meta_server import MetaServerClient
+from awex.meta.meta_server import MetaServerClient, start_meta_server
 from awex.tests.test_utils import megatron_model_from_hf
-from awex.transfer.nccl_comm import nccl_build_recv_ops, batch_send_recv
-from awex.transfer.transfer_plan import TransferPlanBuilder, slice_tensor
+from awex.transfer.nccl_comm import batch_send_recv, nccl_build_recv_ops
+from awex.transfer.transfer_plan import TransferPlanBuilder
+from awex.util.common import get_free_port, simple_hf_config
 from awex.util.process_group import (
     init_weights_update_group,
     setup_batch_isend_irecv,
 )
-from awex.util.common import get_free_port, simple_hf_config
-from awex import logging
 
 logger = logging.getLogger(__name__)
 _env_backup = dict(os.environ)
@@ -89,6 +88,7 @@ def test_weights_writer():
     init_process_group(0, 1, get_free_port())
     # Initialize Megatron parallel state
     from megatron.core import parallel_state as mpu
+
     mpu.initialize_model_parallel(
         tensor_model_parallel_size=1,
         pipeline_model_parallel_size=1,
@@ -241,7 +241,9 @@ def weights_reader(meta_server_addr):
         len(operations) for operations in transfer_plan.operations.values()
     )
     logger.info(f"Number of operations of reads: {num_operations}")
-    logger.info(f"Transfer plan operations by rank: {[(rank, len(ops)) for rank, ops in transfer_plan.operations.items()]}")
+    logger.info(
+        f"Transfer plan operations by rank: {[(rank, len(ops)) for rank, ops in transfer_plan.operations.items()]}"
+    )
     weights_update_group = init_weights_update_group(
         master_address=master_address,
         master_port=master_port,
@@ -288,8 +290,9 @@ def weights_reader(meta_server_addr):
     # The sender uses nccl_build_send_ops which interleaves operations across ranks
     all_ranks = list(transfer_plan.operations.keys())  # Preserve plan's order
     p2p_ops = nccl_build_recv_ops(parameters, transfer_plan, weights_update_group)
-    logger.info(f"Reader (rank 0): Building recv operations from sender ranks: {all_ranks}")
-
+    logger.info(
+        f"Reader (rank 0): Building recv operations from sender ranks: {all_ranks}"
+    )
 
     # Debug: Check if tensors are properly allocated
     logger.info("Debug: Verifying recv operations were created correctly")
@@ -307,9 +310,7 @@ def weights_reader(meta_server_addr):
 
     # Execute recv operations via batch_send_recv to share the same
     # scheduling and stream assignment logic as the production reader.
-    logger.info(
-        f"Test reader: Executing {len(p2p_ops)} recv ops via batch_send_recv"
-    )
+    logger.info(f"Test reader: Executing {len(p2p_ops)} recv ops via batch_send_recv")
     batch_send_recv(send_ops=[], recv_ops=p2p_ops, blocking=True, use_group=True)
     logger.info("All recv operations completed, synchronizing CUDA")
     torch.cuda.synchronize(device=torch.cuda.current_device())
@@ -318,7 +319,9 @@ def weights_reader(meta_server_addr):
     # Barrier can also hang, so add timeout
     logger.info("Waiting at barrier")
     try:
-        dist.barrier(group=weights_update_group, device_ids=[torch.cuda.current_device()])
+        dist.barrier(
+            group=weights_update_group, device_ids=[torch.cuda.current_device()]
+        )
         logger.info("Barrier completed")
     except TimeoutError:
         logger.error("Barrier timed out")

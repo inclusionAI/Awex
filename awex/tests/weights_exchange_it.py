@@ -35,7 +35,7 @@ from awex.tests.test_utils import megatron_model_from_hf
 logger = logging.getLogger(__name__)
 
 
-enable_debug_mode = True
+enable_debug_mode = False
 
 tp_size = 1
 lite_inference_config = {
@@ -154,6 +154,7 @@ class WeightsExchangeIT:
             "comm_backend": comm_backend,
             "enable_debug_mode": enable_debug_mode,
         }
+        self.sgl_engine = None
         self.sglang_engine = None
         self.megatron_engine = None
         self.executor = ThreadPoolExecutor(max_workers=4)
@@ -162,14 +163,19 @@ class WeightsExchangeIT:
         self._init_sglang_engine()
         self._init_megatron_engine()
 
+    def destroy(self):
+        self.sgl_engine.shutdown()
+
     def _init_sglang_engine(self):
         os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, range(tp_size)))
         import sglang as sgl
+
         from awex.engine.sglang import extract_sgl_config
 
         sgl_engine = sgl.Engine(
             **extract_sgl_config(self.inference_config), random_seed=42
         )
+        self.sgl_engine = sgl_engine
         self.sglang_engine = SGlangEngine(self.inference_config, sgl_engine)
         self.sglang_engine.initialize()
         os.environ.pop("CUDA_VISIBLE_DEVICES")
@@ -364,6 +370,7 @@ def main(args):
         logger.info(f"========== Test weights exchange {i} ==========")
         weights_exchange_it.exchange_weights()
     dist.destroy_process_group()
+    weights_exchange_it.destroy()
 
 
 if __name__ == "__main__":

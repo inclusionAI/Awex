@@ -18,19 +18,19 @@
 import json
 import os
 from datetime import datetime
-from typing import List, Dict, Any, Tuple
+from typing import Any, Dict, List, Tuple
 
 from awex.meta.meta_resolver import ParamMetaResolver, logger
 from awex.meta.weight_meta import (
+    ParameterMeta,
     compute_total_model_size,
     dump_parameters_meta,
-    ParameterMeta,
 )
+from awex.models.registry import get_infer_weights_converter
+from awex.sharding import get_rank_info_extractor, get_sharding_strategy_builder
 from awex.sharding.param_sharding import ShardingType
 from awex.sharding.rank_info import RankInfo
-from awex.sharding import get_rank_info_extractor, get_sharding_strategy_builder
 from awex.util.common import to_dict
-from awex.models.registry import get_infer_weights_converter
 
 
 class InferParamMetaResolver(ParamMetaResolver):

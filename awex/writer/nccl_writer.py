@@ -16,26 +16,26 @@
 # under the License.
 
 import gc
-from awex import logging
 import os
 import time
 
 import torch
+import torch.distributed as dist
 
-from awex.transfer.nccl_comm import nccl_build_send_ops, batch_send_recv
-from awex.transfer.transfer_plan import TransferPlanBuilder, slice_tensor
-from awex.util.common import get_ip_address, compute_statistics
+from awex import logging
+from awex.transfer.nccl_comm import batch_send_recv, nccl_build_send_ops
+from awex.transfer.transfer_plan import TransferPlanBuilder
+from awex.util.common import compute_statistics, get_ip_address
 from awex.util.gpu import print_current_gpu_status
 from awex.util.process_group import init_weights_update_group, setup_batch_isend_irecv
 from awex.util.system_util import count_open_fds
 from awex.util.tensor_util import (
+    cuda_ipc_serialize,
     group_tensors_by_shape_and_dtype,
     ipc_serialize,
-    cuda_ipc_serialize,
     release_tensors,
 )
 from awex.writer.weights_writer import WeightsExchangeShardingWriter
-import torch.distributed as dist
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +61,12 @@ class NCCLWeightsWriter(WeightsExchangeShardingWriter):
             self.transfer_rank,
         )
         self.recv_ranks = list(self.transfer_plan.operations.keys())
-        logger.info(f"Writer rank {self.transfer_rank}: Built transfer plan to send to ranks: {self.recv_ranks}")
-        logger.info(f"Writer rank {self.transfer_rank}: Operations per rank: {[(rank, len(ops)) for rank, ops in self.transfer_plan.operations.items()]}")
+        logger.info(
+            f"Writer rank {self.transfer_rank}: Built transfer plan to send to ranks: {self.recv_ranks}"
+        )
+        logger.info(
+            f"Writer rank {self.transfer_rank}: Operations per rank: {[(rank, len(ops)) for rank, ops in self.transfer_plan.operations.items()]}"
+        )
         self.recv_ranks_sample = (
             self.recv_ranks[:8] + ["..."] + self.recv_ranks[-8:]
             if len(self.recv_ranks) > 16
@@ -180,7 +184,9 @@ class NCCLWeightsWriter(WeightsExchangeShardingWriter):
         logger.info(
             f"Writer: Executing {len(p2p_op_list)} send ops via batch_send_recv"
         )
-        batch_send_recv(send_ops=p2p_op_list, recv_ops=[], blocking=True, use_group=True)
+        batch_send_recv(
+            send_ops=p2p_op_list, recv_ops=[], blocking=True, use_group=True
+        )
         torch.cuda.synchronize(device=torch.cuda.current_device())
         duration = time.time() - start_time
         logger.info(

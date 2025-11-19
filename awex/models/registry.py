@@ -16,14 +16,14 @@
 # under the License.
 
 import importlib
-from awex import logging
 import pkgutil
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Dict, Callable
+from typing import Callable, Dict
 
 from transformers import PretrainedConfig
 
+from awex import logging
 from awex.converter.mcore_converter import McoreToHFWeightConverter
 from awex.converter.sglang_converter import SGlangToHFWeightConverter
 from awex.sharding.param_sharding import ShardingStrategy
@@ -57,7 +57,7 @@ class _ModelRegistry:
             )
 
 
-@lru_cache()
+@lru_cache
 def import_model_configs():
     model_arch_name_to_config = {}
     package_name = "awex.models"

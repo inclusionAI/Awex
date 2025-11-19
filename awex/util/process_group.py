@@ -17,11 +17,10 @@
 
 import os
 
-from awex import logging
-
 import torch
-
 import torch.distributed as dist
+
+from awex import logging
 
 logger = logging.getLogger(__name__)
 
