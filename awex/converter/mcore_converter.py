@@ -109,10 +109,28 @@ class McoreToHFWeightConverter:
                         parameter.narrow(0, 2 * stride, stride),
                     ),
                 ]
+        elif "self_attention.linear_qkv.bias" in name:
+            if self._fuse_qkv(name):
+                # Keep fused format
+                return [("attention.query_key_value.bias", parameter)]
+            else:
+                # Split into separate Q, K, V projection biases
+                shape0 = parameter.shape[0]
+                stride = shape0 // 3
+                return [
+                    ("attention.q_proj.bias", parameter.narrow(0, 0, stride)),
+                    ("attention.k_proj.bias", parameter.narrow(0, stride, stride)),
+                    (
+                        "attention.v_proj.bias",
+                        parameter.narrow(0, 2 * stride, stride),
+                    ),
+                ]
         elif "self_attention.linear_qkv.layer_norm_weight" in name:
             return [("input_layernorm.weight", parameter)]
         elif "self_attention.linear_proj.weight" in name:
             return [("attention.dense.weight", parameter)]
+        elif "self_attention.linear_proj.bias" in name:
+            return [("attention.dense.bias", parameter)]
         elif "self_attention.q_layernorm.weight" in name:
             return [("attention.query_layernorm.weight", parameter)]
         elif "self_attention.k_layernorm.weight" in name:
@@ -140,8 +158,27 @@ class McoreToHFWeightConverter:
                         ),
                     ),
                 ]
+        elif "linear_fc1.bias" in name:
+            if self._fuse_gate_up_proj(name):
+                return [("gate_up_proj.bias", parameter)]
+            else:
+                # split gate_proj and up_proj biases
+                return [
+                    (
+                        "gate_proj.bias",
+                        parameter.narrow(0, 0, parameter.shape[0] // 2),
+                    ),
+                    (
+                        "up_proj.bias",
+                        parameter.narrow(
+                            0, parameter.shape[0] // 2, parameter.shape[0] // 2
+                        ),
+                    ),
+                ]
         elif "linear_fc2.weight" in name:
             return [("down_proj.weight", parameter)]
+        elif "linear_fc2.bias" in name:
+            return [("down_proj.bias", parameter)]
         else:
             raise NotImplementedError(f"Unsupported parameter name: {name}")
 
@@ -165,12 +202,12 @@ class McoreToHFWeightConverter:
             return [("input_layernorm.weight", parameter)]
         elif "shared_experts.gate_weight" in name:
             return [("mlp.shared_expert_gate.weight", parameter)]
-        elif "shared_experts.linear_fc1.weight" in name:
+        elif "shared_experts.linear_fc1.weight" in name or "shared_experts.linear_fc1.bias" in name:
             return [
                 (f"mlp.shared_experts.{name}", param)
                 for name, param in self._convert_linear(name, parameter)
             ]
-        elif "shared_experts.linear_fc2.weight" in name:
+        elif "shared_experts.linear_fc2.weight" in name or "shared_experts.linear_fc2.bias" in name:
             return [
                 (f"mlp.shared_experts.{name}", param)
                 for name, param in self._convert_linear(name, parameter)
@@ -191,7 +228,7 @@ class McoreToHFWeightConverter:
                 (f"mlp.experts.{expert_id}.{name}", param)
                 for name, param in self._convert_linear(name, parameter)
             ]
-        elif "linear_fc1.weight" in name or "linear_fc2.weight" in name:
+        elif "linear_fc1.weight" in name or "linear_fc2.weight" in name or "linear_fc1.bias" in name or "linear_fc2.bias" in name:
             return [
                 (f"mlp.{name}", param)
                 for name, param in self._convert_linear(name, parameter)
