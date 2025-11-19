@@ -114,17 +114,17 @@ def create_dummy_engine(sharding_case=None, param_defs=None, ranks=None):
             self.engine = MagicMock()
             self.engine.server_args = server_args
 
-            # Mirror server_args into engine.config so
-            # InferParamMetaResolver.infer_engine_config behaves similarly
-            # to the real engine.
-            self.engine.config = MagicMock()
-            self.engine.config.enable_dp_attention = server_args.enable_dp_attention
-            self.engine.config.enable_dp_lm_head = server_args.enable_dp_lm_head
-            self.engine.config.moe_dense_tp_size = server_args.moe_dense_tp_size
-            self.engine.config.ep_size = server_args.ep_size
-
+            # In real SGlangEngine, InferenceParamMetaResolver reads
+            # sharding-related fields from `config` (an InferenceConfig).
+            # For the dummy engine we mirror the necessary fields from
+            # server_args onto `config` so the default ShardingStrategy
+            # sees the expected values.
             self.config = MagicMock()
             self.config.enable_debug_mode = False
+            self.config.enable_dp_attention = server_args.enable_dp_attention
+            self.config.enable_dp_lm_head = server_args.enable_dp_lm_head
+            self.config.moe_dense_tp_size = server_args.moe_dense_tp_size
+            self.config.ep_size = server_args.ep_size
 
             # Add hf_config attribute that InferParamMetaResolver expects
             self.hf_config = MagicMock()
