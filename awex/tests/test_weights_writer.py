@@ -118,8 +118,8 @@ def test_weights_writer():
             master_info = meta_server_client.get_object("master_info", timeout=1)
             logger.info(f"Found master_info: {master_info}")
             break
-        except Exception:
-            logger.exception("Failed to get master info")
+        except Exception as e:
+            logger.error(f"Failed to get master info: {e}")
             time.sleep(0.5)
     else:
         raise TimeoutError("Reader did not put master_info within 30 seconds")
