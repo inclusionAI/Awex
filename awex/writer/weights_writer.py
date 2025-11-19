@@ -189,8 +189,12 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
             raise_exception=not self.enable_debug_mode,
         )
         self.weight_converter = get_train_weights_converter(
-            self.train_engine.engine_name
-        )(self.model_arch_name, self.hf_config, self.rank_info, self.infer_conf)
+            self.train_engine.engine_name,
+            self.model_arch_name,
+            self.hf_config,
+            self.rank_info,
+            self.infer_conf
+        )
         logger.info("Start to get number of inference engines from meta server")
         self.num_infer_engines = self.meta_server_client.get_object(
             "num_infer_engines", timeout=self.timeout
