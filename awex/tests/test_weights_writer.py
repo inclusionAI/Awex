@@ -58,11 +58,7 @@ def create_mocked_mcore_engine():
     os.environ["DEVICE"] = "1"
     # Ensure current CUDA device matches DEVICE before Megatron init so
     # that Megatron constructs its model directly on GPU 1.
-    if torch.cuda.is_available():
-        try:
-            torch.cuda.set_device(int(os.environ["DEVICE"]))
-        except Exception:
-            pass
+    torch.cuda.set_device(int(os.environ["DEVICE"]))
     ip, port = start_meta_server()
     config = {
         "meta_server_addr": f"{ip}:{port}",
@@ -314,7 +310,7 @@ def weights_reader(meta_server_addr):
     logger.info(
         f"Test reader: Executing {len(p2p_ops)} recv ops via batch_send_recv"
     )
-    batch_send_recv(send_ops=[], recv_ops=p2p_ops, async_op=False, use_group=False)
+    batch_send_recv(send_ops=[], recv_ops=p2p_ops, blocking=True, use_group=True)
     logger.info("All recv operations completed, synchronizing CUDA")
     torch.cuda.synchronize(device=torch.cuda.current_device())
     logger.info("Finished receiving weights")

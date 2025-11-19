@@ -504,8 +504,8 @@ def _run_p2p_op(op: dist.P2POp, async_op: bool) -> Optional[dist.Work]:
 def batch_send_recv(
     send_ops: Optional[Sequence[dist.P2POp]],
     recv_ops: Optional[Sequence[dist.P2POp]],
-    async_op: bool = True,
-    use_group: bool = False,
+    blocking: bool = True,
+    use_group: bool = True,
     use_stream: bool = True,
 ):
     """Execute send and recv P2P operations with optional grouping.
@@ -513,14 +513,14 @@ def batch_send_recv(
     Args:
         send_ops: Sequence of P2POp objects representing sends.
         recv_ops: Sequence of P2POp objects representing recvs.
-        async_op: If True, use non-blocking isend/irecv and return Work
-            handles. If False, use blocking send/recv and wait for
+        blocking: If False, use non-blocking isend/irecv and return Work
+            handles. If True, use blocking send/recv and wait for
             completion before returning.
         use_group: If True, use ``torch.distributed.batch_isend_irecv`` to
             launch the operations as a group. Otherwise, execute them
             explicitly, interleaving across ranks and using a pool of CUDA
             streams for concurrency.
-
+        use_stream: If True, use multiple cuda streams for send/recv
     Returns:
         List of ``torch.distributed.Work`` objects if ``async_op`` is True,
         otherwise an empty list.
@@ -536,7 +536,7 @@ def batch_send_recv(
     if use_group:
         all_ops = _interleave_p2p_ops_by_peer(send_ops + recv_ops)
         works = dist.batch_isend_irecv(all_ops)
-        if async_op:
+        if not blocking:
             return works
         for work in works:
             work.wait()
@@ -569,14 +569,14 @@ def batch_send_recv(
         if use_stream and current_stream is not None:
             # Execute on a dedicated CUDA stream for this peer.
             with torch.cuda.stream(current_stream):
-                work = _run_p2p_op(op, async_op)
+                work = _run_p2p_op(op, not blocking)
         else:
-            work = _run_p2p_op(op, async_op)
+            work = _run_p2p_op(op, not blocking)
 
         if work is not None:
             works.append(work)
 
-    if async_op:
+    if not blocking:
         return works
 
     # For blocking mode, make sure all CUDA work is completed.

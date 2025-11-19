@@ -34,8 +34,7 @@ requires-python = ">=3.8"
 dependencies = []
 
 [project.optional-dependencies]
-dev = []
-test = [
+dev = [
     "modelscope>=1.9.0",  # For faster download models
 ]
 

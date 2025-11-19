@@ -67,6 +67,7 @@ Awex is an open-source project. We welcome all forms of contributions:
 2. **Suggest Features**: Have an idea? Start a discussion
 3. **Improve Docs**: Documentation improvements are always welcome
 4. **Submit Code**: See our [Contributing Guide](https://github.com/inclusionAI/awex/blob/main/CONTRIBUTING.md)
+5. **Agent Workflows**: Read the [Repository Guidelines](AGENTS.md) for structure, testing, and PR expectations.
 
 ### Development Setup
 
@@ -76,9 +77,6 @@ cd awex
 
 # Install in development mode with dev dependencies
 pip install -e ".[dev]"
-
-# For testing
-pip install -e ".[test]"
 
 # Run tests
 pytest -v -s .
@@ -90,8 +88,6 @@ pytest -v -s awex/tests/test_meta_resolver.py
 ruff format .
 ruff check --fix .
 ```
-
-**Note**: The test suite automatically detects network availability and falls back to ModelScope when HuggingFace is not accessible. To enable this feature, install the test dependencies with `pip install -e ".[test]"`.
 
 See [DEVELOPMENT.md](DEVELOPMENT.md) for detailed build instructions.
 

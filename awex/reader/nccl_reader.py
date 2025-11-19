@@ -294,7 +294,7 @@ class NCCLWorkerWeightsReader(WorkerWeightsReader):
         logger.info(
             f"Reader: Executing {len(p2p_op_list)} recv ops via batch_send_recv"
         )
-        batch_send_recv(send_ops=[], recv_ops=p2p_op_list, async_op=False, use_group=False)
+        batch_send_recv(send_ops=[], recv_ops=p2p_op_list, blocking=True, use_group=True)
         torch.cuda.synchronize(device=torch.cuda.current_device())
         duration = time.time() - start_time
         logger.info(
