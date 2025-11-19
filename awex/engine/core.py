@@ -74,6 +74,16 @@ class InferenceEngine(Engine):
         """Update weights for inference engine."""
         pass
 
+    @property
+    @abstractmethod
+    def num_engines(self):
+        return 1
+
+    @property
+    @abstractmethod
+    def engine_rank(self):
+        return 0
+
 
 class TrainingEngine(Engine):
     @abstractmethod

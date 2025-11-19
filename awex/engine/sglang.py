@@ -35,11 +35,10 @@ class SGlangEngine(InferenceEngine):
             config = InferenceConfig.from_dict(config)
         self._config = config
         self._sgl_engine = sgl_engine
-        self.engine_rank = config.engine_rank
         self.node_rank = config.node_rank
         self.released_tags = set()
         self.weights_exchange_reader = None
-        self.rank_coordinate = f"{self.engine_rank}-{self.node_rank}"
+        self.rank_coordinate = f"{config.engine_rank}-{self.node_rank}"
         self._initialized = False
 
     @property
@@ -150,6 +149,14 @@ class SGlangEngine(InferenceEngine):
                 f"execute task in model workers"
             )
         return self._sgl_engine.execute_task_in_model_worker(fn, **kwargs)
+
+    @property
+    def num_engines(self):
+        return self._config.num_engines
+
+    @property
+    def engine_rank(self):
+        return self._config.engine_rank
 
 
 def extract_sgl_config(config: Dict[str, Any]) -> Dict[str, Any]:

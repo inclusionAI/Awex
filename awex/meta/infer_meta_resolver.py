@@ -48,7 +48,7 @@ class InferParamMetaResolver(ParamMetaResolver):
         """
         super().__init__(inference_engine.hf_config)
         self._inference_engine = inference_engine
-        self.infer_engine_config = inference_engine.engine.config
+        self.infer_engine_config = inference_engine.config
         self.engine_name = inference_engine.engine_name
         self.convert_params = convert_params
         self.num_engines = num_engines
