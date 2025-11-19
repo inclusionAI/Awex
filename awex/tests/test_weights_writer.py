@@ -56,7 +56,7 @@ def create_mocked_mcore_engine():
     config = {
         "meta_server_addr": f"{ip}:{port}",
         "comm_backend": "nccl",
-        "enable_debug_mode": False,
+        "enable_debug_mode": True,
     }
     from awex.engine.mcore import MegatronEngine
 

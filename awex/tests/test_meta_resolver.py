@@ -101,7 +101,7 @@ def create_dummy_engine(sharding_case=None, param_defs=None, ranks=None):
                 self.engine.server_args.enable_dp_attention = False
 
             self.config = MagicMock()
-            self.config.enable_debug_mode = False
+            self.config.enable_debug_mode = True
 
             # Add hf_config attribute that InferParamMetaResolver expects
             self.hf_config = MagicMock()
@@ -198,7 +198,7 @@ def create_real_engine_config(model_path, tp_size=1, pp_size=1, dp_size=1):
         "dp_size": dp_size,
         "log_level": "error",
         "stream_output": False,
-        "enable_debug_mode": False,
+        "enable_debug_mode": True,
         "engine_rank": 0,
         "num_engines": 1,
         "node_rank": 0,

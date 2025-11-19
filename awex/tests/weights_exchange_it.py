@@ -35,7 +35,7 @@ from awex.tests.test_utils import megatron_model_from_hf
 logger = logging.getLogger(__name__)
 
 
-enable_debug_mode = False
+enable_debug_mode = True
 
 tp_size = 1
 lite_inference_config = {
