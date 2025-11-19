@@ -159,10 +159,11 @@ class WeightsReader(WeightExchangeReader):
         )
         logger.info("Finished getting training parameters meta from meta server")
         self.training_world_size = self.training_params_meta[0].shards[0].world_size
+        config = self.inference_engine.config
         check_train_infer_params_meta(
             self.training_params_meta,
             self.parameters_meta,
-            raise_exception=not self.inference_engine.enable_debug_mode,
+            raise_exception=not config.enable_debug_mode,
         )
         logger.info("Start to send parameters meta to tp workers")
         infer_parameters_meta_bytes = pickle.dumps(self.parameters_meta)
@@ -176,10 +177,10 @@ class WeightsReader(WeightExchangeReader):
             engine_rank=self.engine_rank,
             num_engines=self.num_engines,
             meta_server_addr=self.meta_server_addr,
-            weights_comm_backend=self.inference_engine.comm_backend,
-            enable_debug_mode=self.inference_engine.enable_debug_mode,
-            debug_mode_config=self.inference_engine.config.debug_mode_config,
-            disable_pipeline=self.inference_engine.config.disable_weights_exchange_pipeline,
+            weights_comm_backend=config.comm_backend,
+            enable_debug_mode=config.enable_debug_mode,
+            debug_mode_config=config.debug_mode_config,
+            disable_pipeline=config.disable_weights_exchange_pipeline,
             enable_colocate_mode=self.enable_colocate_mode,
             ipc_backend=self.ipc_backend,
             weights_comm_nccl_group_size=self.weights_comm_nccl_group_size,
@@ -693,7 +694,7 @@ class WorkerWeightsReader:
 
 
 def get_weights_exchange_reader(inference_engine) -> WeightExchangeReader:
-    if inference_engine.comm_backend == "file":
+    if inference_engine.config.comm_backend == "file":
         return FileWeightExchangeReader(inference_engine)
     meta_resolver = InferParamMetaResolver(
         inference_engine,
