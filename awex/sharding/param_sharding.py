@@ -168,10 +168,12 @@ class ShardingStrategy:
         """
         sharding_dim = get_default_sharding_dim(parameter_name)
         tp_size = self.rank_info.tp_size
-        if self.moe_dense_tp_size != 1 and tp_size > 1:
+        # Default strategy: shard MLP weights across tensor-parallel
+        # ranks whenever tp_size > 1. Model-specific strategies can
+        # override this behaviour via a custom ShardingStrategy.
+        if tp_size > 1:
             return ShardingType.TP_SHARDING, sharding_dim, tp_size
-        else:
-            return ShardingType.NO_SHARDING, sharding_dim, 1
+        return ShardingType.NO_SHARDING, sharding_dim, 1
 
     def get_shared_expert_sharding_strategy(self, parameter_name, **kwargs):
         """

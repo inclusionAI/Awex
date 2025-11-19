@@ -56,35 +56,18 @@ def setup_modelscope_cache():
         return False
 
 
-def megatron_model_from_hf(
-    model_path: str = "Qwen/Qwen2-1.5B",
-) -> Tuple[list, PretrainedConfig]:
+def _resolve_local_model_dir_and_config(
+    model_path: str,
+) -> Tuple[str, PretrainedConfig]:
+    """Resolve a model path to a local directory and HF config.
+
+    This helper encapsulates the download logic shared between tests
+    that need a local model directory (for Megatron or sglang) and
+    supports both HuggingFace and ModelScope backends.
     """
-    Convert HuggingFace model to DCP format and load into Megatron.
-
-    This function:
-    1. Downloads HuggingFace model if needed
-    2. Converts HF weights to Megatron DCP format using convert.py
-    3. Initializes Megatron model with TP=PP=DP=EP=CP=1
-    4. Loads the DCP checkpoint into Megatron model
-    5. Returns Megatron model list and HF config
-
-    Args:
-        model_path: HuggingFace model path (default: Qwen/Qwen2-1.5B)
-
-    Returns:
-        Tuple of ([megatron_model], hf_config)
-        The model is a real Megatron GPT model wrapped in a list for VPP support
-
-    Note:
-        This creates a temporary DCP checkpoint in /tmp/megatron_dcp_<model_name>
-    """
-    import sys
-    import tempfile
-    import subprocess
-
-    # Detect network and use appropriate source
+    # Detect network and select source
     use_modelscope = False
+    model_path_for_download = model_path
     if not is_huggingface_available():
         print("HuggingFace is not accessible, trying ModelScope...")
         if setup_modelscope_cache():
@@ -96,35 +79,82 @@ def megatron_model_from_hf(
                 "Qwen/Qwen2.5-1.5B": "qwen/Qwen2.5-1.5B",
                 "Qwen/Qwen2.5-7B": "qwen/Qwen2.5-7B",
             }
-            model_path_for_download = modelscope_map.get(model_path, model_path.replace("Qwen/", "qwen/"))
+            model_path_for_download = modelscope_map.get(
+                model_path, model_path.replace("Qwen/", "qwen/")
+            )
         else:
-            print("Warning: Neither HuggingFace nor ModelScope is available. Attempting to load from local cache...")
+            print(
+                "Warning: Neither HuggingFace nor ModelScope is available. "
+                "Attempting to load from local cache..."
+            )
 
-    print(f"Loading model from {'ModelScope' if use_modelscope else 'HuggingFace'}: {model_path}")
+    print(
+        f"Loading model from {'ModelScope' if use_modelscope else 'HuggingFace'}: {model_path}"
+    )
 
-    # Download model from ModelScope if needed
     if use_modelscope:
+        # Download model from ModelScope
         try:
             from modelscope import snapshot_download
-            local_model_path = snapshot_download(model_path_for_download, cache_dir=os.path.expanduser("~/.cache/modelscope"))
+
+            local_model_path = snapshot_download(
+                model_path_for_download,
+                cache_dir=os.path.expanduser("~/.cache/modelscope"),
+            )
             print(f"Model downloaded to: {local_model_path}")
             hf_model_dir = local_model_path
         except Exception as e:
             print(f"Failed to download from ModelScope: {e}")
-            print("Falling back to HuggingFace (may fail if not accessible)...")
+            print(
+                "Falling back to HuggingFace (may fail if not accessible)..."
+            )
             hf_model_dir = model_path
     else:
-        # Download from HuggingFace
+        # Download from HuggingFace (or use local cache if already present)
         from transformers import AutoModelForCausalLM
+
         print(f"Downloading {model_path} from HuggingFace...")
         AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True)
         hf_model_dir = model_path
 
-    # Load config
     hf_config = AutoConfig.from_pretrained(
         hf_model_dir,
         trust_remote_code=True,
     )
+
+    return hf_model_dir, hf_config
+
+
+def get_local_model_dir(model_path: str = "Qwen/Qwen2-1.5B") -> str:
+    """Ensure model weights/config are available locally and return directory.
+
+    This is used by tests that need a local model path (e.g., sglang
+    backend) without hard-coding HuggingFace or ModelScope behavior.
+    """
+    hf_model_dir, _ = _resolve_local_model_dir_and_config(model_path)
+    return hf_model_dir
+
+
+def megatron_model_from_hf(
+    model_path: str = "Qwen/Qwen2-1.5B",
+) -> Tuple[list, PretrainedConfig]:
+    """Convert HF/ModelScope model to DCP format and load into Megatron.
+
+    This function:
+    1. Ensures the model is available locally (via HF or ModelScope)
+    2. Converts HF weights to Megatron DCP format using convert.py
+    3. Initializes Megatron model with TP=PP=DP=EP=CP=1
+    4. Loads the DCP checkpoint into Megatron model
+    5. Returns Megatron model list and HF config
+
+    Note:
+        This creates a temporary DCP checkpoint in /tmp/megatron_dcp_<model_name>
+    """
+    import sys
+    import tempfile
+    import subprocess
+
+    hf_model_dir, hf_config = _resolve_local_model_dir_and_config(model_path)
 
     print("HF Config loaded:")
     print(f"  Model type: {hf_config.model_type}")
