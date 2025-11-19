@@ -425,7 +425,7 @@ def start_meta_server(host: str = "", port: int = 0) -> Tuple[str, int]:
         start_meta_server._server_process = process
 
         logger.info(
-            f"[os.getpid()] Meta server started in subprocess (PID: {process.pid}) on {address}:{actual_port}"
+            f"[{os.getpid()}] Meta server started in subprocess (PID: {process.pid}) on {address}:{actual_port}"
         )
         return address, actual_port
 
