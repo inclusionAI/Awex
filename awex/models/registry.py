@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ModelConfig:
-    sharding_strategy: ShardingStrategy
+    sharding_strategy: Callable[..., ShardingStrategy]
     mcore_converter: Callable[..., McoreToHFWeightConverter]
     sglang_converter: Callable[..., SGlangToHFWeightConverter]
 
@@ -51,7 +51,7 @@ class _ModelRegistry:
         else:
             logger.info(f"Model {model_name} not found, using default strategy.")
             return ModelConfig(
-                sharding_strategy=get_sharding_strategy(model_name),
+                sharding_strategy=ShardingStrategy,
                 mcore_converter=McoreToHFWeightConverter,
                 sglang_converter=SGlangToHFWeightConverter,
             )
