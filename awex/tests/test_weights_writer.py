@@ -105,6 +105,9 @@ def test_weights_writer():
     mp.set_start_method("spawn", force=True)
     p = mp.Process(target=weights_reader, args=(mcore_engine.meta_server_addr,))
     p.start()
+    while not p.is_alive():
+        time.sleep(0.1)
+    logger.info(f"Starting reader process {p.pid}")
 
     # Wait for the reader to put master_info
     max_wait_time = 30
@@ -132,11 +135,23 @@ def test_weights_writer():
     weights_writer.write_weights(step_id=0)
     weights_writer.finish_step(step_id=0)
 
-    # Wait for the reader process to finish
-    p.kill()
+    # Wait for the reader process to finish with timeout
+    p.join(timeout=10)
+    if p.is_alive():
+        logger.warning("Reader process did not finish, terminating...")
+        p.terminate()
+        p.join(timeout=5)
+        if p.is_alive():
+            logger.error("Reader process did not terminate, killing...")
+            p.kill()
+            p.join()
 
     # Clean up process group
-    dist.destroy_process_group()
+    try:
+        if dist.is_initialized():
+            dist.destroy_process_group()
+    except Exception as e:
+        logger.error(f"Error destroying process group: {e}")
 
     os.environ.clear()
     os.environ.update(_env_backup)
@@ -217,6 +232,7 @@ def weights_reader(meta_server_addr):
         len(operations) for operations in transfer_plan.operations.values()
     )
     logger.info(f"Number of operations of reads: {num_operations}")
+    logger.info(f"Transfer plan operations by rank: {[(rank, len(ops)) for rank, ops in transfer_plan.operations.items()]}")
     weights_update_group = init_weights_update_group(
         master_address=master_address,
         master_port=master_port,
@@ -253,29 +269,46 @@ def weights_reader(meta_server_addr):
             )
             tensors_map[id(operation)] = tensor
     torch.cuda.synchronize(device=torch.cuda.current_device())
+
+    # Build recv operations in round-robin order to match the sender's round-robin pattern
+    # The sender uses nccl_build_send_ops which interleaves operations across ranks
     p2p_ops = []
-    for rank, operations in transfer_plan.operations.items():
-        logger.info(f"Start to recv from rank: {rank}, operations {operations[:5]} ")
-        for operation in operations:
-            tensor = tensors_map[id(operation)]
-            original_shape = tensor.shape
-            tensor = slice_tensor(tensor, operation, False)
-            logger.info(
-                f"Tensor {operation.recv_shard_meta.name}: original_shape={original_shape}, "
-                f"sliced_shape={tensor.shape}, dtype={tensor.dtype}"
-            )
-            p2p_op = dist.P2POp(
-                dist.irecv,
-                tensor,
-                rank,
-                group=weights_update_group,
-            )
-            p2p_ops.append(p2p_op)
-    logger.info(f"Start to batch recv weights with {len(p2p_ops)} operations")
+    recv_progress = {rank: 0 for rank in transfer_plan.operations.keys()}
+    unfinished_ranks = set(transfer_plan.operations.keys())
+
+    while len(unfinished_ranks) > 0:
+        finished_ranks = set()
+        for rank in unfinished_ranks:
+            operations = transfer_plan.operations[rank]
+            progress = recv_progress[rank]
+            if progress < len(operations):
+                operation = operations[progress]
+                tensor = tensors_map[id(operation)]
+                original_shape = tensor.shape
+                tensor = slice_tensor(tensor, operation, False)
+                logger.info(
+                    f"Tensor {operation.recv_shard_meta.name}: rank={rank}, "
+                    f"original_shape={original_shape}, sliced_shape={tensor.shape}, dtype={tensor.dtype}"
+                )
+                p2p_op = dist.P2POp(
+                    dist.irecv,
+                    tensor,
+                    rank,
+                    group=weights_update_group,
+                )
+                p2p_ops.append(p2p_op)
+                recv_progress[rank] = progress + 1
+            else:
+                finished_ranks.add(rank)
+        for rank in finished_ranks:
+            unfinished_ranks.remove(rank)
+    logger.info(f"Start to batch recv weights with {len(p2p_ops)} operations in round-robin order")
 
     # Debug: Check if tensors are properly allocated
-    logger.info("Debug: Checking tensor allocation")
-    for i, operation in enumerate(list(transfer_plan.operations.values())[0][:3]):
+    logger.info("Debug: Verifying recv operations were created correctly")
+    first_rank = list(transfer_plan.operations.keys())[0]
+    first_ops = transfer_plan.operations[first_rank][:3]
+    for i, operation in enumerate(first_ops):
         tensor = tensors_map[id(operation)]
         logger.info(
             f"Tensor {i}: {operation.recv_shard_meta.name}, "
@@ -284,7 +317,8 @@ def weights_reader(meta_server_addr):
         )
 
     reqs = dist.batch_isend_irecv(p2p_ops)
-    logger.info(f"Started batch_isend_irecv with {len(reqs)} requests")
+    logger.info(f"Started batch_isend_irecv with {len(reqs)} requests (reader side)")
+    logger.info(f"Reader: Initiated {len(p2p_ops)} irecv operations")
 
     # Set up a timeout handler
     class TimeoutError(Exception):
@@ -299,10 +333,12 @@ def weights_reader(meta_server_addr):
 
     try:
         for i, req in enumerate(reqs):
+            logger.info(f"Waiting for request {i}/{len(reqs)}")
             signal.alarm(timeout_seconds)
             try:
                 req.wait()
                 signal.alarm(0)  # Cancel the alarm
+                logger.info(f"Request {i}/{len(reqs)} completed")
             except TimeoutError:
                 logger.error(f"Request {i} timed out after {timeout_seconds} seconds")
                 signal.alarm(0)
@@ -311,9 +347,25 @@ def weights_reader(meta_server_addr):
         signal.alarm(0)  # Make sure alarm is cancelled
         signal.signal(signal.SIGALRM, old_handler)  # Restore old handler
 
+    logger.info("All requests completed, synchronizing CUDA")
     torch.cuda.synchronize(device=torch.cuda.current_device())
     logger.info("Finished receiving weights")
-    dist.barrier(group=weights_update_group, device_ids=[torch.cuda.current_device()])
+
+    # Barrier can also hang, so add timeout
+    logger.info("Waiting at barrier")
+    signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(60)
+    try:
+        dist.barrier(group=weights_update_group, device_ids=[torch.cuda.current_device()])
+        signal.alarm(0)
+        logger.info("Barrier completed")
+    except TimeoutError:
+        signal.alarm(0)
+        logger.error("Barrier timed out")
+        raise
+    finally:
+        signal.alarm(0)
+
     logger.info("Start to destroy process group")
     dist.destroy_process_group()
     logger.info("Destroyed process group")

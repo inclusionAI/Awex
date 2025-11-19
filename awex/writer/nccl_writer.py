@@ -61,6 +61,8 @@ class NCCLWeightsWriter(WeightsExchangeShardingWriter):
             self.transfer_rank,
         )
         self.recv_ranks = list(self.transfer_plan.operations.keys())
+        logger.info(f"Writer rank {self.transfer_rank}: Built transfer plan to send to ranks: {self.recv_ranks}")
+        logger.info(f"Writer rank {self.transfer_rank}: Operations per rank: {[(rank, len(ops)) for rank, ops in self.transfer_plan.operations.items()]}")
         self.recv_ranks_sample = (
             self.recv_ranks[:8] + ["..."] + self.recv_ranks[-8:]
             if len(self.recv_ranks) > 16
@@ -162,10 +164,14 @@ class NCCLWeightsWriter(WeightsExchangeShardingWriter):
         )
         start_time = time.time()
         parameters = self.convert_parameters()
+        logger.info(f"Writer: Converting parameters completed, building send ops")
         p2p_op_list, _ = nccl_build_send_ops(
             parameters, self.transfer_plan, self.weights_update_group, -1
         )
+        logger.info(f"Writer: Built {len(p2p_op_list)} send operations to {len(self.transfer_plan.operations)} ranks")
+        logger.info(f"Writer: About to call batch_isend_irecv with {len(p2p_op_list)} operations...")
         reqs = dist.batch_isend_irecv(p2p_op_list)
+        logger.info(f"Writer: batch_isend_irecv completed, got {len(reqs)} requests")
         for req in reqs:
             req.wait()
         torch.cuda.synchronize(device=torch.cuda.current_device())
