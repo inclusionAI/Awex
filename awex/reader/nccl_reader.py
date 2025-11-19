@@ -24,6 +24,7 @@ import torch
 import torch.distributed as dist
 
 from awex.reader.weights_reader import WorkerWeightsReader
+from awex.transfer.nccl_comm import nccl_build_recv_ops
 from awex.transfer.transfer_plan import slice_tensor, TransferPlanBuilder
 from awex.util.common import (
     compute_statistics,
@@ -278,32 +279,7 @@ class NCCLWorkerWeightsReader(WorkerWeightsReader):
             f"ranks({self.send_ranks_sample}) for rank {self.rank_coordinate}."
         )
         start_time = time.time()
-        p2p_op_list = []
-        recv_progress = {rank: 0 for rank in self.transfer_plan.operations.keys()}
-        unfinished_ranks = set(self.transfer_plan.operations.keys())
-        while len(unfinished_ranks) > 0:
-            finished_ranks = set()
-            for send_rank in unfinished_ranks:
-                operations = self.transfer_plan.operations[send_rank]
-                progress = recv_progress[send_rank]
-                num_operations = len(operations)
-                if progress < num_operations:
-                    op = operations[progress]
-                    recv_tensor = self.parameters[op.recv_shard_meta.name]
-                    tensor_sliced = slice_tensor(recv_tensor, op, False)
-                    p2p_op_list.append(
-                        dist.P2POp(
-                            dist.irecv,
-                            tensor_sliced,
-                            send_rank,
-                            group=self.weights_update_group,
-                        )
-                    )
-                    recv_progress[send_rank] = progress + 1
-                else:
-                    finished_ranks.add(send_rank)
-            for rank in finished_ranks:
-                unfinished_ranks.remove(rank)
+        p2p_op_list = nccl_build_recv_ops(self.parameters, self.transfer_plan, self.weights_update_group)
         reqs = dist.batch_isend_irecv(p2p_op_list)
         for req in reqs:
             req.wait()
@@ -377,14 +353,4 @@ class NCCLWorkerWeightsReader(WorkerWeightsReader):
         self.meta_server_client.get_object_then_delete(write_finished_key)
         logger.info(
             f"Finished updating weights in colocate mode for rank {self.transfer_rank}"
-        )
-
-    def _build_send_ops_for_colocate_mode(self):
-        from awex.writer.nccl_writer import nccl_build_send_ops
-
-        return nccl_build_send_ops(
-            self.deserialized_weights,
-            self.send_transfer_plan,
-            self.weights_update_group,
-            self.transfer_rank,
         )

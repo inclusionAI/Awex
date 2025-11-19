@@ -22,6 +22,7 @@ import time
 
 import torch
 
+from awex.transfer.nccl_comm import nccl_build_send_ops
 from awex.transfer.transfer_plan import TransferPlanBuilder, slice_tensor
 from awex.util.common import get_ip_address, compute_statistics
 from awex.util.gpu import print_current_gpu_status
@@ -283,41 +284,3 @@ class NCCLWeightsWriter(WeightsExchangeShardingWriter):
         logger.info(
             f"Finished writing weights in colocate mode for rank {self.transfer_rank}"
         )
-
-
-@torch.no_grad()
-def nccl_build_send_ops(parameters, transfer_plan, weights_update_group, copy_rank):
-    send_progress = {rank: 0 for rank in transfer_plan.operations.keys()}
-    unfinished_ranks = set(transfer_plan.operations.keys())
-    p2p_op_list = []
-    copy_op_list = []
-    train_slice_context = {}
-    while len(unfinished_ranks) > 0:
-        finished_ranks = set()
-        for recv_rank in unfinished_ranks:
-            operations = transfer_plan.operations[recv_rank]
-            progress = send_progress[recv_rank]
-            num_operations = len(operations)
-            if progress < num_operations:
-                op = operations[progress]
-                send_tensor = parameters[op.send_shard_meta.name]
-                tensor_sliced = slice_tensor(
-                    send_tensor, op, True, slice_context=train_slice_context
-                )
-                if recv_rank == copy_rank:
-                    copy_op_list.append(tensor_sliced)
-                else:
-                    p2p_op_list.append(
-                        dist.P2POp(
-                            dist.isend,
-                            tensor_sliced,
-                            recv_rank,
-                            group=weights_update_group,
-                        )
-                    )
-                send_progress[recv_rank] = progress + 1
-            else:
-                finished_ranks.add(recv_rank)
-        for rank in finished_ranks:
-            unfinished_ranks.remove(rank)
-    return p2p_op_list, copy_op_list

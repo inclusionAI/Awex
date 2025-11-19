@@ -352,3 +352,70 @@ def execute_p2p_op_list(p2p_op_list, stage: str, weights_update_group):
     logger.info(
         f"[{os.getpid()}] Finished executing {num_ops} p2p operations for {stage}, took {duration:.4f} seconds"
     )
+
+
+@torch.no_grad()
+def nccl_build_send_ops(parameters, transfer_plan, weights_update_group, copy_rank):
+    send_progress = {rank: 0 for rank in transfer_plan.operations.keys()}
+    unfinished_ranks = set(transfer_plan.operations.keys())
+    p2p_op_list = []
+    copy_op_list = []
+    train_slice_context = {}
+    while len(unfinished_ranks) > 0:
+        finished_ranks = set()
+        for recv_rank in unfinished_ranks:
+            operations = transfer_plan.operations[recv_rank]
+            progress = send_progress[recv_rank]
+            num_operations = len(operations)
+            if progress < num_operations:
+                op = operations[progress]
+                send_tensor = parameters[op.send_shard_meta.name]
+                tensor_sliced = slice_tensor(
+                    send_tensor, op, True, slice_context=train_slice_context
+                )
+                if recv_rank == copy_rank:
+                    copy_op_list.append(tensor_sliced)
+                else:
+                    p2p_op_list.append(
+                        dist.P2POp(
+                            dist.isend,
+                            tensor_sliced,
+                            recv_rank,
+                            group=weights_update_group,
+                        )
+                    )
+                send_progress[recv_rank] = progress + 1
+            else:
+                finished_ranks.add(recv_rank)
+        for rank in finished_ranks:
+            unfinished_ranks.remove(rank)
+    return p2p_op_list, copy_op_list
+
+
+def nccl_build_recv_ops(parameters, transfer_plan, weights_update_group):
+    p2p_op_list = []
+    recv_progress = {rank: 0 for rank in transfer_plan.operations.keys()}
+    unfinished_ranks = set(transfer_plan.operations.keys())
+    while len(unfinished_ranks) > 0:
+        finished_ranks = set()
+        for send_rank in unfinished_ranks:
+            operations = transfer_plan.operations[send_rank]
+            progress = recv_progress[send_rank]
+            num_operations = len(operations)
+            if progress < num_operations:
+                op = operations[progress]
+                recv_tensor = parameters[op.recv_shard_meta.name]
+                tensor_sliced = slice_tensor(recv_tensor, op, False)
+                p2p_op_list.append(
+                    dist.P2POp(
+                        dist.irecv,
+                        tensor_sliced,
+                        send_rank,
+                        group=weights_update_group,
+                    )
+                )
+                recv_progress[send_rank] = progress + 1
+            else:
+                finished_ranks.add(send_rank)
+        for rank in finished_ranks:
+            unfinished_ranks.remove(rank)
