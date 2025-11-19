@@ -404,7 +404,6 @@ def transform_mcore_qkv_weight(weight: torch.Tensor):
         query_list = []
         key_list = []
         value_list = []
-        expected_chunk_size = each_query_size + 2 * each_kv_size
         for qkv in torch.chunk(weight, total_num_kv_heads, dim=0):
             q, k, v = qkv.split([each_query_size, each_kv_size, each_kv_size], dim=0)
             query_list.append(q)

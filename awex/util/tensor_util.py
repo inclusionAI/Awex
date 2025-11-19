@@ -211,7 +211,7 @@ def group_tensors_by_shape_and_dtype(
     final_tensor_groups = []
     metadata = []
 
-    for (shape, dtype), group_tensors in tensor_groups.items():
+    for (_shape, _dtype), group_tensors in tensor_groups.items():
         # Sort by original index to maintain order
         group_tensors.sort(key=lambda x: x[0])
         # Split into multiple groups - try to group tensors efficiently

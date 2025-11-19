@@ -86,7 +86,7 @@ class ParamMetaResolver(ABC):
             self._get_params_raw_meta()
         )  # List of meta dicts, one per rank
         param_shards = defaultdict(list)
-        param_sharding_info = dict()
+        param_sharding_info = {}
         for rank_meta in all_params_raw_meta:
             rank_info: RankInfo = rank_meta["rank_info"]
             for param_meta in rank_meta["params_meta"]:

@@ -317,7 +317,7 @@ class WeightsExchangeIT:
 
     def _calculate_tp_slices(self, param_shape, tp_rank, tp_size, sharding_dim, length):
         """Calculate the appropriate slices for tensor parallel verification."""
-        slices = list(slice(0, min(length, dim)) for dim in param_shape)
+        slices = [slice(0, min(length, dim)) for dim in param_shape]
         assert sharding_dim is not None, (
             f"Sharding dimension is not set for parameter of shape {param_shape}"
         )

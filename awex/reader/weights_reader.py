@@ -20,7 +20,7 @@ import pickle
 import threading
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import torch
 
@@ -57,7 +57,9 @@ class WeightExchangeReader(ABC):
             self.infer_config.weights_comm_nccl_group_size
         )
 
+    @abstractmethod
     def initialize(self, **kwargs):
+        """Initialize the weight exchange reader."""
         pass
 
     @abstractmethod
@@ -68,6 +70,10 @@ class WeightExchangeReader(ABC):
 class FileWeightExchangeReader(WeightExchangeReader):
     def __init__(self, inference_engine):
         super().__init__(inference_engine)
+
+    def initialize(self, **kwargs):
+        """Initialize file-based weight exchange reader (no-op)."""
+        pass
 
     def update_weights(self, step_id, **kwargs):
         if self.enable_colocate_mode:
@@ -385,8 +391,8 @@ class WeightsReader(WeightExchangeReader):
     def _validate_weights(
         self,
         step_id,
-        dump_weights_list_for_validation: List[str] = [],
-        dump_weights_dir_for_validation=".",
+        dump_weights_list_for_validation: Optional[List[str]] = None,
+        dump_weights_dir_for_validation: str = ".",
         **kwargs,
     ):
         if self.validated_steps == 0:

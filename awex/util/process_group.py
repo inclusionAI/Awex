@@ -226,7 +226,9 @@ def init_weights_update_group(
         logger.info(f"Initialized custom process group: {group}")
         return group
     except Exception as e:
-        raise RuntimeError(f"Failed to initialize custom process group: {e}.")
+        raise RuntimeError(
+            f"Failed to initialize custom process group: {e}."
+        ) from e
 
 
 def setup_batch_isend_irecv(

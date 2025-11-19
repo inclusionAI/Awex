@@ -195,10 +195,10 @@ class SGlangToHFWeightConverter:
                 # Normal experts
                 param_name = name.replace("experts", f"experts.{expert_id}")
 
-            for param_name, param_tensor in self._convert_mlp_param(
+            for converted_name, param_tensor in self._convert_mlp_param(
                 param_name, expert_parameter, layer_number
             ):
-                converted_params.append((param_name, param_tensor))
+                converted_params.append((converted_name, param_tensor))
         return converted_params
 
     def _convert_expert_moe_param(
@@ -216,21 +216,25 @@ class SGlangToHFWeightConverter:
             expert_id = i + self.ep_rank * num_local_experts
             expert_parameter = parameter[i]
             if "w13_weight" in name:
-                for name, param in self._convert_mlp_param(
+                for converted_name, param in self._convert_mlp_param(
                     name, expert_parameter, layer_number
                 ):
                     # mlp.experts.63.gate_up_proj.weight
                     # mlp.experts.63.gate_proj.weight
                     # mlp.experts.63.up_proj.weight
-                    name = name.replace("mlp.", f"mlp.experts.{expert_id}.")
-                    converted_params.append((name, param))
+                    updated_name = converted_name.replace(
+                        "mlp.", f"mlp.experts.{expert_id}."
+                    )
+                    converted_params.append((updated_name, param))
             elif "w2_weight" in name:
-                for name, param in self._convert_mlp_param(
+                for converted_name, param in self._convert_mlp_param(
                     name, expert_parameter, layer_number
                 ):
                     # mlp.experts.63.down_proj.weight
-                    name = name.replace("mlp.", f"mlp.experts.{expert_id}.")
-                    converted_params.append((name, param))
+                    updated_name = converted_name.replace(
+                        "mlp.", f"mlp.experts.{expert_id}."
+                    )
+                    converted_params.append((updated_name, param))
             else:
                 raise NotImplementedError(f"Unsupported expert parameter name: {name}")
         return converted_params

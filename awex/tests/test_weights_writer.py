@@ -261,7 +261,7 @@ def weights_reader(meta_server_addr):
     setup_batch_isend_irecv(weights_update_group, 0, 2)
     # Debug: Check the first few operations to understand tensor shapes
     logger.info("Debug: Checking tensor shapes for first 3 operations")
-    for rank, operations in transfer_plan.operations.items():
+    for _rank, operations in transfer_plan.operations.items():
         for i, operation in enumerate(operations[:3]):
             logger.info(
                 f"Operation {i}: name={operation.recv_shard_meta.name}, "
@@ -273,7 +273,7 @@ def weights_reader(meta_server_addr):
     # Parameters are keyed by their shard name to mirror how the writer passes tensors.
     parameters = {}
     logger.info(f"Create tensors at device cuda:{torch.cuda.current_device()}")
-    for rank, operations in transfer_plan.operations.items():
+    for _rank, operations in transfer_plan.operations.items():
         for operation in operations:
             param_name = operation.recv_shard_meta.name
             if param_name in parameters:

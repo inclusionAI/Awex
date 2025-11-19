@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 class MegatronEngine(TrainingEngine):
     def __init__(self, config: Dict[str, Any], hf_config, model):
-        super(MegatronEngine, self).__init__(hf_config)
+        super().__init__(hf_config)
         self.config = config
         logger.info(f"config {self.config}")
         self.model = model

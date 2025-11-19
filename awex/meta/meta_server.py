@@ -148,7 +148,7 @@ class MetaServer:
 
         # Poll health check until server is ready
         max_attempts = 50  # 5 seconds with 0.1s intervals
-        for attempt in range(max_attempts):
+        for _attempt in range(max_attempts):
             # Check if server thread failed
             if not self._server_thread.is_alive():
                 if self._server_error:

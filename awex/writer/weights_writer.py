@@ -54,7 +54,9 @@ class WeightExchangeWriter(ABC):
         self.enable_debug_mode = train_engine.enable_debug_mode
         self.enable_colocate_mode = train_engine.enable_colocate_mode
 
+    @abstractmethod
     def initialize(self, **kwargs):
+        """Initialize the weight exchange writer."""
         pass
 
     @abstractmethod
@@ -65,6 +67,10 @@ class WeightExchangeWriter(ABC):
 class FileWeightExchangeWriter(WeightExchangeWriter):
     def __init__(self, train_engine):
         super().__init__(train_engine)
+
+    def initialize(self, **kwargs):
+        """Initialize file-based weight exchange writer (no-op)."""
+        pass
 
     def write_weights(self, **kwargs):
         if self.enable_colocate_mode:
@@ -308,9 +314,7 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
         logger.info(f"GPU status before write weights:\n{get_gpu_status()}")
         for name, param in parameters:
             temp_parameters = self.weight_converter.convert_param(name, param)
-            temp_parameters = {
-                hf_name: hf_param for hf_name, hf_param in temp_parameters
-            }
+            temp_parameters = dict(temp_parameters)
             tensor_pairs = []
             for name, parameter in temp_parameters.items():
                 if name not in self.current_worker_parameters_map:

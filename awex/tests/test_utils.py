@@ -49,7 +49,7 @@ def setup_modelscope_cache():
     Setup ModelScope cache directory and environment.
     """
     try:
-        from modelscope.hub.snapshot_download import snapshot_download
+        import modelscope  # noqa: F401
 
         return True
     except ImportError:
@@ -198,7 +198,7 @@ def megatron_model_from_hf(
             raise RuntimeError(
                 f"Cannot find Megatron-LM installation: {e}. "
                 "Please ensure Megatron-LM is properly installed and on PYTHONPATH."
-            )
+            ) from e
 
         convert_script = f"{megatron_root}/tools/checkpoint/convert.py"
 

@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 class NCCLWorkerWeightsReader(WorkerWeightsReader):
     def __init__(self, *args, **kwargs):
-        super(NCCLWorkerWeightsReader, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.transfer_plan = None
         self.weights_update_group = None
         self.send_ranks = None
