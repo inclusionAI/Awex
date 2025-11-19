@@ -544,7 +544,7 @@ def batch_send_recv(
         return []
 
     # Manual execution path with explicit interleaving and CUDA streams.
-    streams = _get_comm_streams()
+    streams = _get_comm_streams() if use_stream else []
     num_streams = len(streams)
 
     # Interleave sends and recvs across peers for better overlap.
@@ -556,7 +556,7 @@ def batch_send_recv(
     # that peer while allowing different peers to run concurrently.
     peers = sorted({op.peer for op in all_ops})
     peer_to_stream_idx: Dict[int, int] = {}
-    if num_streams > 0:
+    if use_stream > 0:
         for idx, peer in enumerate(peers):
             peer_to_stream_idx[peer] = idx % num_streams
 
