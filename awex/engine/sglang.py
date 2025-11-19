@@ -32,7 +32,7 @@ class SGlangEngine(InferenceEngine):
     def __init__(self, config: Union[Dict[str, Any], InferenceConfig], sgl_engine):
         super().__init__(sgl_engine.tokenizer_manager.model_config)
         if isinstance(config, dict):
-            config = InferenceConfig(**config)
+            config = InferenceConfig.from_dict(config)
         self._config = config
         self._sgl_engine = sgl_engine
         self.engine_rank = config.engine_rank
