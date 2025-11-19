@@ -120,8 +120,12 @@ class McoreParamMetaResolver(ParamMetaResolver):
         from awex.converter.mcore_converter import get_mcore_model_parameters
 
         mcore_to_hf_weight_converter = get_train_weights_converter(
-            self._train_engine.engine_name
-        )(self._model_arch_name, self.hf_config, self._rank_info, self._infer_conf)
+            self._train_engine.engine_name,
+            self._model_arch_name,
+            self.hf_config,
+            self._rank_info,
+            self._infer_conf
+        )
         for model in self._mcore_model:
             params_dict = get_mcore_model_parameters(model)
             for name, param in params_dict.items():
