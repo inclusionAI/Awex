@@ -261,6 +261,7 @@ def weights_reader(meta_server_addr):
 
     # Parameters are keyed by their shard name to mirror how the writer passes tensors.
     parameters = {}
+    logger.info(f"Create tensors at device cuda:{torch.cuda.current_device()}")
     for rank, operations in transfer_plan.operations.items():
         for operation in operations:
             param_name = operation.recv_shard_meta.name

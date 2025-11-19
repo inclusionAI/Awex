@@ -117,11 +117,30 @@ class NCCLWeightsWriter(WeightsExchangeShardingWriter):
         )
 
     def _set_device(self):
-        device = torch.cuda.current_device()
-        gpu_id = int(os.environ.get("DEVICE", device)) % torch.cuda.device_count()
+        """Set CUDA device for the writer to match model parameters.
+        """
+
+        param_device = None
+        try:
+            for model in self.model:
+                for _, p in model.named_parameters():
+                    param_device = p.device
+                    break
+                if param_device is not None:
+                    break
+        except Exception:
+            param_device = None
+
+        if param_device is not None and param_device.type == "cuda":
+            gpu_id = param_device.index
+            source = "model_param"
+        else:
+            device = torch.cuda.current_device()
+            source = "current"
+            gpu_id = int(os.environ.get("DEVICE", device)) % torch.cuda.device_count()
         logger.info(
-            f"[NCCLWeightsWriter] Set device to {gpu_id} for rank {self.transfer_rank}, device env is {os.environ.get('DEVICE')}, "
-            f"previous device is {device}, device_count is {torch.cuda.device_count()}, "
+            f"[NCCLWeightsWriter] Set device to {gpu_id} (source={source}) for "
+            f"rank {self.transfer_rank}, param_device={param_device}, "
             f"CUDA_VISIBLE_DEVICES env is {os.environ.get('CUDA_VISIBLE_DEVICES')}"
         )
         torch.cuda.set_device(gpu_id)
