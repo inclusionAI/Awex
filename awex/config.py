@@ -90,3 +90,19 @@ class InferenceConfig:
             if k in InferenceConfig.__dataclass_fields__
         }
         return InferenceConfig(**config_dict)
+
+    @staticmethod
+    def from_sgl_engine(sgl_engine, **extra_config) -> "InferenceConfig":
+        return InferenceConfig.from_sgl_server_args(
+            sgl_engine.server_args, **extra_config
+        )
+
+    @staticmethod
+    def from_sgl_server_args(server_args, **extra_config) -> "InferenceConfig":
+        config = {}
+        for k in InferenceConfig.__dataclass_fields__:
+            value = getattr(server_args, k, None)
+            if value is not None:
+                config[k] = value
+        config.update(**extra_config)
+        return InferenceConfig(**config)

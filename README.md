@@ -109,12 +109,13 @@ writer.write_weights(step_id=1)
 SGLang inference engine weight update example:
 
 ```python
-from awex import WeightsReader
+from awex import WeightsReader, InferenceConfig
 from awex.engine.sglang import SGLangEngine
 import sglang as sgl
 
 sgl_engine = sgl.Engine(model_path="xxx", tp_size=2, random_seed=42)
-inference_engine = SGLangEngine(awex_confg, sgl_engine)
+awex_config = InferenceConfig.from_sgl_engine(sgl_engine, comm_backend="nccl")
+inference_engine = SGLangEngine(awex_config, sgl_engine)
 reader = WeightsReader(inference_engine)
 reader.initialize()
 

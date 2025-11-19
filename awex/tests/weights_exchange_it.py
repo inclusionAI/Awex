@@ -28,7 +28,7 @@ import torch.distributed as dist
 
 from awex import logging
 from awex.engine.mcore import MegatronEngine
-from awex.engine.sglang import SGlangEngine
+from awex.engine.sglang import SGLangEngine
 from awex.meta.meta_server import start_meta_server
 from awex.tests.test_utils import megatron_model_from_hf
 
@@ -176,7 +176,7 @@ class WeightsExchangeIT:
             **extract_sgl_config(self.inference_config), random_seed=42
         )
         self.sgl_engine = sgl_engine
-        self.sglang_engine = SGlangEngine(self.inference_config, sgl_engine)
+        self.sglang_engine = SGLangEngine(self.inference_config, sgl_engine)
         self.sglang_engine.initialize()
         os.environ.pop("CUDA_VISIBLE_DEVICES")
         logger.info("SGLang backend initialized")

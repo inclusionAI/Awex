@@ -27,7 +27,7 @@ from awex.util.gpu import get_gpu_status
 logger = logging.getLogger(__name__)
 
 
-class SGlangEngine(InferenceEngine):
+class SGLangEngine(InferenceEngine):
     def __init__(self, config: Union[Dict[str, Any], InferenceConfig], sgl_engine):
         super().__init__(sgl_engine.tokenizer_manager.model_config)
         if isinstance(config, dict):

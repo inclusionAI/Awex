@@ -81,9 +81,9 @@ def make_all_params_meta(param_defs, ranks):
 
 
 def create_dummy_engine(sharding_case=None, param_defs=None, ranks=None):
-    """Create a DummySGlangEngine with proper server_args configuration."""
+    """Create a DummySGLangEngine with proper server_args configuration."""
 
-    class DummySGlangEngine:
+    class DummySGLangEngine:
         def __init__(self):
             # Minimal interface expected by InferParamMetaResolver and
             # sglang sharding helpers.
@@ -115,7 +115,7 @@ def create_dummy_engine(sharding_case=None, param_defs=None, ranks=None):
             self.engine = MagicMock()
             self.engine.server_args = server_args
 
-            # In real SGlangEngine, InferenceParamMetaResolver reads
+            # In real SGLangEngine, InferenceParamMetaResolver reads
             # sharding-related fields from `config` (an InferenceConfig).
             # For the dummy engine we mirror the necessary fields from
             # server_args onto `config` so the default ShardingStrategy
@@ -136,7 +136,7 @@ def create_dummy_engine(sharding_case=None, param_defs=None, ranks=None):
                 return make_all_params_meta(param_defs, ranks)
             return []
 
-    return DummySGlangEngine()
+    return DummySGLangEngine()
 
 
 def create_test_shard(
@@ -602,7 +602,7 @@ def test_meta_resolver_with_real_engine():
     config = create_real_engine_config(model_path)
     import sglang as sgl
 
-    from awex.engine.sglang import SGlangEngine, extract_sgl_config
+    from awex.engine.sglang import SGLangEngine, extract_sgl_config
 
     try:
         sgl_engine = sgl.Engine(**extract_sgl_config(config), random_seed=42)
@@ -615,7 +615,7 @@ def test_meta_resolver_with_real_engine():
             pytest.skip(f"SGLang Engine unavailable due to GPU memory layout: {e}")
         raise
 
-    engine = SGlangEngine(config, sgl_engine)
+    engine = SGLangEngine(config, sgl_engine)
     engine.initialize()
     resolver = InferParamMetaResolver(engine)
     params_meta = resolver.get_parameters_meta()
@@ -657,7 +657,7 @@ def test_meta_resolver_lite():
 
     import sglang as sgl
 
-    from awex.engine.sglang import SGlangEngine, extract_sgl_config
+    from awex.engine.sglang import SGLangEngine, extract_sgl_config
 
     try:
         sgl_engine = sgl.Engine(**extract_sgl_config(config), random_seed=42)
@@ -666,7 +666,7 @@ def test_meta_resolver_lite():
         if "memory capacity is unbalanced" in msg:
             pytest.skip(f"SGLang Engine unavailable due to GPU memory layout: {e}")
         raise
-    engine = SGlangEngine(config, sgl_engine)
+    engine = SGLangEngine(config, sgl_engine)
     engine.initialize()
     resolver = InferParamMetaResolver(engine)
     params_meta = resolver.get_parameters_meta()

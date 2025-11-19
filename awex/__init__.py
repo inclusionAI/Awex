@@ -15,8 +15,14 @@
 # specific language governing permissions and limitations
 # under the License.
 
+from awex.config import InferenceConfig
 from awex.reader.nccl_reader import NCCLWorkerWeightsReader
 from awex.reader.weights_reader import WeightsReader
 from awex.writer.nccl_writer import NCCLWeightsWriter
 
-__all__ = ["NCCLWeightsWriter", "WeightsReader", "NCCLWorkerWeightsReader"]
+__all__ = [
+    "InferenceConfig",
+    "NCCLWeightsWriter",
+    "WeightsReader",
+    "NCCLWorkerWeightsReader",
+]

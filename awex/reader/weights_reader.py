@@ -86,9 +86,16 @@ class FileWeightExchangeReader(WeightExchangeReader):
 class WeightsReader(WeightExchangeReader):
     parameters_meta: List[ParameterMeta]
 
-    def __init__(self, meta_resolver: InferParamMetaResolver, inference_engine):
+    def __init__(self, inference_engine, meta_resolver: InferParamMetaResolver = None):
         super().__init__(inference_engine)
         self.infer_engine_config = self.inference_engine.config
+        if meta_resolver is None:
+            meta_resolver = InferParamMetaResolver(
+                inference_engine,
+                num_engines=inference_engine.num_engines,
+                engine_rank=inference_engine.engine_rank,
+                convert_params=True,
+            )
         self.meta_resolver = meta_resolver
         self.parameters_meta = []
         self.hf_config = inference_engine.hf_config
@@ -697,10 +704,4 @@ class WorkerWeightsReader:
 def get_weights_exchange_reader(inference_engine) -> WeightExchangeReader:
     if inference_engine.config.comm_backend == "file":
         return FileWeightExchangeReader(inference_engine)
-    meta_resolver = InferParamMetaResolver(
-        inference_engine,
-        num_engines=inference_engine.num_engines,
-        engine_rank=inference_engine.engine_rank,
-        convert_params=True,
-    )
-    return WeightsReader(meta_resolver, inference_engine)
+    return WeightsReader(inference_engine)
