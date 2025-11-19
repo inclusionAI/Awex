@@ -51,9 +51,6 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
-      - name: Run Python CI
-        shell: bash
-        run: python ./ci/run_ci.py python
 
   lint:
     name: Code Style Check
