@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 class WeightExchangeReader(ABC):
     def __init__(self, inference_engine):
         self.inference_engine = inference_engine
-        self.enable_colocate_mode = inference_engine.enable_colocate_mode
+        self.enable_colocate_mode = inference_engine.config.enable_colocate_mode
         self.infer_config = inference_engine.config
         self.weights_comm_nccl_group_size = (
             self.infer_config.weights_comm_nccl_group_size
