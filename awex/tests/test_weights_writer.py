@@ -52,6 +52,7 @@ def create_mocked_mcore_engine():
     os.environ["GLOO_USE_LIBUV"] = "0"
     os.environ["GLOO_SOCKET_IFNAME"] = "eth0"
     os.environ["NCCL_SOCKET_IFNAME"] = "eth0"
+    # Training rank uses GPU 1
     os.environ["LOCAL_RANK"] = "1"
     os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
     os.environ["DEVICE"] = "1"
@@ -72,8 +73,12 @@ def create_mocked_mcore_engine():
     reason="Only one GPU present",
 )
 def test_weights_writer():
-    # Initialize process group for the writer side
+    # Initialize process group for the writer side on GPU 1
     torch.cuda.set_device(1)
+    os.environ["RANK"] = "1"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+    os.environ["DEVICE"] = "1"
+    os.environ["LOCAL_RANK"] = "1"
     init_process_group(0, 1, get_free_port())
     mcore_engine = create_mocked_mcore_engine()
     # Initialize Megatron parallel state
