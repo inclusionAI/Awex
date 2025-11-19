@@ -82,35 +82,36 @@ class WeightsReader(WeightExchangeReader):
 
     def __init__(self, meta_resolver: InferParamMetaResolver, inference_engine):
         super().__init__(inference_engine)
-        self.infer_engine_config = self.inference_engine.infer_engine_config
+        self.infer_engine_config = self.inference_engine.config
         self.meta_resolver = meta_resolver
         self.parameters_meta = []
         self.hf_config = inference_engine.hf_config
+        config = inference_engine.config
         self.model_arch_name = meta_resolver.get_model_arch_name()
-        self.meta_server_addr = inference_engine.meta_server_addr
+        self.meta_server_addr = config.meta_server_addr
         logger.info(f"Meta server address: {self.meta_server_addr}")
         self.meta_server_client = MetaServerClient(*self.meta_server_addr.split(":"))
-        self.num_engines = self.inference_engine.config.num_engines
+        self.num_engines = config.num_engines
         logger.info("Put number of inference engines to meta server")
         self.engine_rank = self.inference_engine.engine_rank
-        self.tp_size = self.inference_engine.config.tp_size
-        self.pp_size = self.inference_engine.config.pp_size
+        self.tp_size = config.tp_size
+        self.pp_size = config.pp_size
         self.infer_world_size = self.num_engines * self.tp_size * self.pp_size
         self.validated_steps = 0
         self.start_step = -1
         self.weights_validation_steps = (
-            self.inference_engine.config.weights_validation_steps
+            config.weights_validation_steps
         )
         self.validate_weights_every_n_steps = (
-            self.inference_engine.config.validate_weights_every_n_steps
+            config.validate_weights_every_n_steps
         )
         self.dump_weights_list_for_validation = (
-            self.inference_engine.config.dump_weights_list_for_validation
+            config.dump_weights_list_for_validation
         )
         self.dump_weights_dir_for_validation = (
-            self.inference_engine.config.dump_weights_dir_for_validation or os.getcwd()
+            config.dump_weights_dir_for_validation or os.getcwd()
         )
-        self.ipc_backend = self.inference_engine.config.weights_exchange_ipc_backend
+        self.ipc_backend = config.weights_exchange_ipc_backend
         self.timeout = 10000
         self.lock = threading.Lock()
         self.initialized = False
