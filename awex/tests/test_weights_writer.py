@@ -72,12 +72,10 @@ def create_mocked_mcore_engine():
     reason="Only one GPU present",
 )
 def test_weights_writer():
-    mcore_engine = create_mocked_mcore_engine()
-
     # Initialize process group for the writer side
     torch.cuda.set_device(1)
     init_process_group(0, 1, get_free_port())
-
+    mcore_engine = create_mocked_mcore_engine()
     # Initialize Megatron parallel state
     from megatron.core import parallel_state as mpu
     mpu.initialize_model_parallel(
