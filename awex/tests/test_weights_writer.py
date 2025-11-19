@@ -52,10 +52,17 @@ def create_mocked_mcore_engine():
     os.environ["GLOO_USE_LIBUV"] = "0"
     os.environ["GLOO_SOCKET_IFNAME"] = "eth0"
     os.environ["NCCL_SOCKET_IFNAME"] = "eth0"
-    # Training rank uses GPU 1
+    # Training rank uses GPU 1 (logical device index 1 in this process)
     os.environ["LOCAL_RANK"] = "1"
     os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
     os.environ["DEVICE"] = "1"
+    # Ensure current CUDA device matches DEVICE before Megatron init so
+    # that Megatron constructs its model directly on GPU 1.
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.set_device(int(os.environ["DEVICE"]))
+        except Exception:
+            pass
     ip, port = start_meta_server()
     config = {
         "meta_server_addr": f"{ip}:{port}",
@@ -77,7 +84,6 @@ def test_weights_writer():
     # own parallel state and CUDA context without relying on a
     # pre-existing default torch process group.
     mcore_engine = create_mocked_mcore_engine()
-
     # Initialize process group for the writer side on GPU 1
     torch.cuda.set_device(1)
     os.environ["RANK"] = "0"

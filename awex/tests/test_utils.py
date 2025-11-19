@@ -17,6 +17,7 @@
 
 from typing import Tuple
 import os
+import torch
 
 from dataclasses import dataclass
 from transformers import AutoConfig, PretrainedConfig
@@ -241,6 +242,20 @@ def initialize_megatron_and_load_checkpoint(dcp_dir, hf_config, hf_model_dir):
     from megatron.training.checkpointing import load_checkpoint
     from megatron.core.models.gpt import GPTModel
 
+    # Honor DEVICE env before any Megatron CUDA work so that Megatron
+    # initializes directly on the requested GPU (e.g., device 1 for
+    # training tests) rather than defaulting to device 0 and moving
+    # later.
+    if torch.cuda.is_available():
+        device_env = os.environ.get("DEVICE")
+        if device_env is not None:
+            try:
+                device_id = int(device_env)
+                print(f"Setting torch CUDA device to {device_id} based on DEVICE={device_env}")
+                torch.cuda.set_device(device_id)
+            except Exception as e:
+                print(f"Warning: Failed to set CUDA device from DEVICE={device_env}: {e}")
+
     # Parse default args first
     args = parse_args(extra_args_provider=None, ignore_unknown_args=True)
 
@@ -314,7 +329,10 @@ def initialize_megatron_and_load_checkpoint(dcp_dir, hf_config, hf_model_dir):
     except Exception as e:
         print(f"Warning: Could not load fused kernels: {e}")
 
-    # Build model using custom qwen2_model_provider
+    # Build model using custom qwen2_model_provider. By this point the
+    # current CUDA device has already been set from DEVICE (if
+    # available), so model parameters are created directly on that
+    # device.
     print("Building Megatron GPT model...")
     model = qwen2_model_provider(pre_process=True, post_process=True)
 
