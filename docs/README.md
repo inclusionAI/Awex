@@ -66,7 +66,7 @@ NCCL transmission mode primarily uses NCCL's send/recv interface for weight tran
 In separated transmission mode, Awex first constructs a joint training-inference NCCL Process Group for subsequent weight transmission from training to inference. Next, based on the NCCL send and transfer plan created during initialization, **P2P peer-to-peer ordered weight sending and receiving** is performed on each process of the training and inference engines. The overall workflow is as follows:
 
 <div align="center">
-  <img width="85%" alt="Apache Fory logo" src="images/nccl_separate.png"><br>
+  <img width="85%" alt="nccl separate" src="images/nccl_separate.png"><br>
 </div>
 
 **CUDA IPC Co-located Zero-Copy Weight Mapping**
@@ -76,7 +76,7 @@ Since the rank count of a single NCCL communication group can only equal the num
 In this case, Awex uses **CUDA IPC to zero-copy map the training process's GPU memory to the inference process**, establishes a global communication group for all inference processes, then uses this communication group for NCCL send/recv to complete weight exchange from training to inference engines:
 
 <div align="center">
-  <img width="85%" alt="Apache Fory logo" src="images/nccl_colocate.png"><br>
+  <img width="85%" alt="nccl colocate" src="images/nccl_colocate.png"><br>
 </div>
 
 In implementation, we have also made some **performance optimizations**:
@@ -93,6 +93,10 @@ Although NCCL transmission mode can already significantly improve weight exchang
 2. **NCCL's static topology is not friendly to communication domain scaling**, as continued RL training causes inference outputs to gradually grow and workload to increase, requiring scaling of inference instances. NCCL needs to destroy the entire communication group and rebuild;
 
 Considering these two reasons, we also developed an RDMA-based transmission implementation, which can be switched with a single configuration parameter.
+
+<div align="center">
+  <img width="85%" alt="RDMA transport" src="images/rmda_transport.png"><br>
+</div>
 
 **RDMA Mode Advantages**:
 
