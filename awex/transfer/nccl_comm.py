@@ -388,7 +388,7 @@ def nccl_build_send_ops(parameters, transfer_plan, weights_update_group, copy_ra
     train_slice_context = {}
     while len(unfinished_ranks) > 0:
         finished_ranks = set()
-        for recv_rank in unfinished_ranks:
+        for recv_rank in sorted(unfinished_ranks):
             operations = transfer_plan.operations[recv_rank]
             progress = send_progress[recv_rank]
             num_operations = len(operations)
@@ -425,7 +425,7 @@ def nccl_build_recv_ops(
     unfinished_ranks = set(transfer_plan.operations.keys())
     while len(unfinished_ranks) > 0:
         finished_ranks = set()
-        for send_rank in unfinished_ranks:
+        for send_rank in sorted(unfinished_ranks):
             operations = transfer_plan.operations[send_rank]
             progress = recv_progress[send_rank]
             num_operations = len(operations)
