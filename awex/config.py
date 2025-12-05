@@ -36,12 +36,9 @@ class InferenceConfig:
     ep_size: Optional[int] = None
     enable_dp_attention: Optional[bool] = None
     enable_dp_lm_head: Optional[bool] = None
-    enable_ep_moe: Optional[bool] = None
-    enable_deepep_moe: Optional[bool] = None
     deepep_mode: Optional[Literal["auto", "normal", "low_latency"]] = None
     ep_num_redundant_experts: Optional[int] = None
     enable_eplb: Optional[bool] = None
-    eplb_rebalance_num_iterations: Optional[int] = None
     enable_memory_saver: Optional[bool] = None
     moe_dense_tp_size: Optional[int] = None
     n_share_experts_fusion: Optional[int] = None

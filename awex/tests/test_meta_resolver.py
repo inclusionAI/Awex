@@ -108,9 +108,6 @@ def create_dummy_engine(sharding_case=None, param_defs=None, ranks=None):
             server_args.enable_dp_lm_head = False
             server_args.moe_dense_tp_size = 1
             server_args.ep_size = 1
-            server_args.enable_ep_moe = False
-            server_args.enable_deepep_moe = False
-            server_args.enable_pplx_moe = False
 
             self.engine = MagicMock()
             self.engine.server_args = server_args

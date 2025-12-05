@@ -35,7 +35,6 @@ class SGlangToHFWeightConverter:
         self.total_kv_heads = model_config.num_key_value_heads
         self.infer_engine_config = infer_engine_config
         self.rank_info = rank_info
-        self.enable_ep_moe = infer_engine_config.enable_ep_moe
         self.tp_size = infer_engine_config.tp_size
         self.tp_rank = self.rank_info.tp_rank
         self.ep_size = infer_engine_config.ep_size
@@ -205,7 +204,6 @@ class SGlangToHFWeightConverter:
         self, name: str, parameter: torch.Tensor, layer_number: str
     ) -> List[Tuple[str, torch.Tensor]]:
         """Convert expert parameters from SGlang to HuggingFace format."""
-        assert self.enable_ep_moe, "EP mode must be enabled"
         # w13_weight shape: num_experts_per_partition, 2 * intermediate_size, hidden_size
         # w2_weight shape: num_experts_per_partition, hidden_size, intermediate_size
         if "expert_bias" in name:

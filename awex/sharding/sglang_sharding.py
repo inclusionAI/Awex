@@ -34,7 +34,7 @@ def get_sglang_sharding_strategy(
         moe_dense_tp_size=infer_engine_config.moe_dense_tp_size,
         tp_size=rank_info.tp_size,
         ep_size=infer_engine_config.ep_size,
-        ep_tp_size=1,
+        ep_tp_size=rank_info.ep_tp_size,
         rank_info=rank_info,
         **kwargs,
     )
@@ -50,21 +50,15 @@ def get_sglang_rank_info(model_context, engine_rank) -> RankInfo:
     tp_size = model_context["tp_size"]
     tp_rank = model_context["tp_rank"]
     ep_size = infer_engine_config.ep_size
-    if (
-        infer_engine_config.enable_ep_moe
-        or infer_engine_config.enable_deepep_moe
-        or (
-            hasattr(infer_engine_config, "enable_pplx_moe")
-            and infer_engine_config.enable_pplx_moe
-        )
-    ):
-        assert ep_size == tp_size, "ep_size must be equal to tp_size"
-        ep_rank = tp_rank
+    if ep_size > 1:
+        ep_tp_size = tp_size // ep_size
+        ep_tp_rank = tp_rank % ep_tp_size
+        ep_rank = tp_rank // ep_tp_size
     else:
         assert ep_size == 1, "ep_size must be 1"
         ep_rank = 0
-    ep_tp_size = 1
-    ep_tp_rank = 0
+        ep_tp_size = 1
+        ep_tp_rank = 0
     return RankInfo(
         tp_rank=tp_rank,
         tp_size=tp_size,
