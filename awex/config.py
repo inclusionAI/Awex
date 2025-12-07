@@ -33,7 +33,7 @@ class InferenceConfig:
     dp_size: Optional[int] = None
     load_balance_method: Optional[str] = None
     # Expert parallelism
-    ep_size: Optional[int] = None
+    ep_size: Optional[int] = 1
     enable_dp_attention: Optional[bool] = None
     enable_dp_lm_head: Optional[bool] = None
     enable_ep_moe: Optional[bool] = None

@@ -147,6 +147,7 @@ class InferParamMetaResolver(ParamMetaResolver):
         """
         model = kwargs["model"]
         model_context = kwargs["model_context"]
+        model_context["infer_engine_config"] = infer_engine_config
         params_meta = []
         rank_info = get_rank_info_extractor(engine_name)(model_context, engine_rank)
         model_arch_name = type(model).__name__
