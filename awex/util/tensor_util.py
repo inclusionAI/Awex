@@ -211,7 +211,7 @@ def group_tensors_by_shape_and_dtype(
     final_tensor_groups = []
     metadata = []
 
-    for (_shape, _dtype), group_tensors in tensor_groups.items():
+    for _, group_tensors in tensor_groups.items():
         # Sort by original index to maintain order
         group_tensors.sort(key=lambda x: x[0])
         # Split into multiple groups - try to group tensors efficiently
@@ -227,7 +227,8 @@ def group_tensors_by_shape_and_dtype(
             # Check if this tensor can fit in current group
             if current_group_size > max_tensor_size:
                 # Finalize current group and start new one
-                concatenated = torch.cat(current_group, dim=0).contiguous()
+                # Use clone() to ensure a copy so caller can safely release original tensors
+                concatenated = torch.cat(current_group, dim=0).clone()
                 final_tensor_groups.append(concatenated)
                 # Record metadata for tensors in this group
                 offset_elements = 0
@@ -251,7 +252,8 @@ def group_tensors_by_shape_and_dtype(
 
         # Finalize any remaining group
         if current_group:
-            concatenated = torch.cat(current_group, dim=0).contiguous()
+            # Use clone() to ensure a copy so caller can safely release original tensors
+            concatenated = torch.cat(current_group, dim=0).clone()
             final_tensor_groups.append(concatenated)
             # Record metadata for tensors in this group
             offset_elements = 0
