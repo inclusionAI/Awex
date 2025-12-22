@@ -1,9 +1,9 @@
 # Awex
 
 [![Build Status](https://img.shields.io/github/actions/workflow/status/inclusionAI/asystem-awex/ci.yml?branch=main&style=for-the-badge&label=GITHUB%20ACTIONS&logo=github)](https://github.com/inclusionAI/asystem-awex/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/awex.svg?logo=PyPI)](https://pypi.org/project/awex/)
-[![Python Versions](https://img.shields.io/pypi/pyversions/awex.svg?logo=python)](https://pypi.org/project/awex/)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![PyPI](https://img.shields.io/pypi/v/awex.svg?style=for-the-badge&logo=PyPI)](https://pypi.org/project/awex/)
+[![Python Versions](https://img.shields.io/pypi/pyversions/awex.svg?style=for-the-badge&logo=python)](https://pypi.org/project/awex/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=for-the-badge)](https://opensource.org/licenses/Apache-2.0)
 
 
 **Awex** is a high-performance RL training-inference **weight synchronization** framework,
