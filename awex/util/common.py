@@ -192,6 +192,17 @@ def check_train_infer_params_meta(
                 raise ValueError(error_msg)
             else:
                 logger.error(error_msg)
+        infer_tp_size = len(infer_param_meta.replicas[0].shards)
+        train_tp_size = len(train_param_meta.replicas[0].shards)
+        if infer_tp_size < train_tp_size or infer_tp_size % train_tp_size != 0:
+            error_msg = (
+                f"Inference for parameter {param_name} has wrong tp_size: "
+                f"infer {infer_tp_size} train {train_tp_size}"
+            )
+            if raise_exception:
+                raise ValueError(error_msg)
+            else:
+                logger.error(error_msg)
 
 
 def pretty_bytes(size_bytes):
