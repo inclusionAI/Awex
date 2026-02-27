@@ -24,7 +24,12 @@ import torch.distributed as dist
 
 from awex import logging
 from awex.transfer.nccl_comm import batch_send_recv, nccl_build_send_ops
-from awex.transfer.transfer_plan import TransferPlanBuilder
+from awex.transfer.transfer_plan import (
+    TransferPlanBuilder,
+    compute_transfer_plan_hash,
+    compute_transfer_plan_stats,
+)
+from awex.util import device as device_util
 from awex.util.common import compute_statistics, get_ip_address
 from awex.util.gpu import print_current_gpu_status
 from awex.util.process_group import init_weights_update_group, setup_batch_isend_irecv
@@ -60,9 +65,31 @@ class NCCLWeightsWriter(WeightsExchangeShardingWriter):
             self.parameters_meta,
             self.transfer_rank,
         )
+        inter_hash = compute_transfer_plan_hash(self.transfer_plan)
+        logger.info(
+            "Writer rank %s inter plan hash: %s",
+            self.transfer_rank,
+            inter_hash,
+        )
+        logger.info(
+            "Writer rank %s transfer plan stats: %s",
+            self.transfer_rank,
+            compute_transfer_plan_stats(self.transfer_plan),
+        )
         self.recv_ranks = list(self.transfer_plan.operations.keys())
+        self.required_param_names = {
+            op.send_shard_meta.name
+            for ops in self.transfer_plan.operations.values()
+            for op in ops
+        }
         logger.info(
             f"Writer rank {self.transfer_rank}: Built transfer plan to send to ranks: {self.recv_ranks}"
+        )
+        # FIXME (Derek): this might print too many params?
+        logger.info(
+            "Writer rank %s: required converted params for this plan: %s",
+            self.transfer_rank,
+            len(self.required_param_names),
         )
         logger.info(
             f"Writer rank {self.transfer_rank}: Operations per rank: {[(rank, len(ops)) for rank, ops in self.transfer_plan.operations.items()]}"
@@ -93,12 +120,13 @@ class NCCLWeightsWriter(WeightsExchangeShardingWriter):
             self.transfer_rank,
             self.transfer_world_size,
             "weights_exchange",
+            backend=self.comm_backend,
             role="train",
         )
         logger.info(f"Initialized NCCL weights writer for rank {self.transfer_rank}")
         # Add a barrier to ensure all processes are ready
         dist.barrier(
-            group=self.weights_update_group, device_ids=[torch.cuda.current_device()]
+            group=self.weights_update_group, device_ids=[device_util.current_device()]
         )
         logger.info(f"Barrier passed for weights writer with rank {self.transfer_rank}")
         if self.transfer_rank == self.transfer_world_size - 1:
@@ -106,7 +134,7 @@ class NCCLWeightsWriter(WeightsExchangeShardingWriter):
                 f"Start to test NCCL ready for rank {self.transfer_rank}, world size {self.transfer_world_size}"
             )
             dist.send(
-                torch.tensor(1).cuda(),
+                torch.tensor(1, device=device_util.get_torch_device()),
                 dst=0,
                 group=self.weights_update_group,
             )
@@ -121,14 +149,15 @@ class NCCLWeightsWriter(WeightsExchangeShardingWriter):
         )
 
     def _set_device(self):
-        device = torch.cuda.current_device()
-        gpu_id = int(os.environ.get("DEVICE", device)) % torch.cuda.device_count()
+        device = device_util.current_device()
+        count = device_util.device_count() or 1
+        gpu_id = int(os.environ.get("DEVICE", device)) % count
         logger.info(
             f"[NCCLWeightsWriter] Set device to {gpu_id} for rank {self.transfer_rank}, device env is {os.environ.get('DEVICE')}, "
-            f"previous device is {device}, device_count is {torch.cuda.device_count()}, "
-            f"CUDA_VISIBLE_DEVICES env is {os.environ.get('CUDA_VISIBLE_DEVICES')}"
+            f"previous device is {device}, device_count is {count}, "
+            f"{'/'.join(device_util.visible_devices_env_names())} env is {device_util.visible_devices_env_value() or '(unset)'}"
         )
-        torch.cuda.set_device(gpu_id)
+        device_util.set_device(gpu_id)
 
     def _init_writer_in_colocate_mode(self):
         self.ipc_backend = self.asystem_train_config.get(
@@ -138,7 +167,7 @@ class NCCLWeightsWriter(WeightsExchangeShardingWriter):
         # because we use offloading for moving GPU tensors to CPU and back later
         ip_address = get_ip_address()
         self._set_device()
-        device_id = torch.cuda.current_device()
+        device_id = device_util.current_device()
         self.meta_server_client.add_object_to_set(
             "training_device_rank_entries", (ip_address, device_id, self.transfer_rank)
         )
@@ -168,43 +197,83 @@ class NCCLWeightsWriter(WeightsExchangeShardingWriter):
             f"with {self.num_to_sends} sends"
         )
         start_time = time.time()
-        parameters = self.convert_parameters()
-        logger.info("Writer: Converting parameters completed, building send ops")
-        p2p_op_list, _ = nccl_build_send_ops(
-            parameters, self.transfer_plan, self.weights_update_group, -1
-        )
-        logger.info(
-            f"Writer: Built {len(p2p_op_list)} send operations to "
-            f"{len(self.transfer_plan.operations)} ranks"
-        )
+        parameters = None
+        p2p_op_list = None
+        try:
+            if self.enable_mem_debug:
+                print_current_gpu_status(f"writer-{self.transfer_rank} before convert")
+            parameters = self.convert_parameters(
+                required_names=self.required_param_names
+            )
+            logger.info("Writer: Converting parameters completed, building send ops")
+            if self.enable_mem_debug:
+                print_current_gpu_status(f"writer-{self.transfer_rank} after convert")
+            p2p_op_list, _ = nccl_build_send_ops(
+                parameters, self.transfer_plan, self.weights_update_group, -1
+            )
+            logger.info(
+                f"Writer: Built {len(p2p_op_list)} send operations to "
+                f"{len(self.transfer_plan.operations)} ranks"
+            )
+            if self.enable_mem_debug:
+                total_send_bytes = sum(
+                    int(op.tensor.numel()) * int(op.tensor.element_size())
+                    for op in p2p_op_list
+                )
+                logger.info(
+                    "[Writer %s][MEM] built send ops: count=%s total_send_bytes=%s",
+                    self.transfer_rank,
+                    len(p2p_op_list),
+                    total_send_bytes,
+                )
+                print_current_gpu_status(
+                    f"writer-{self.transfer_rank} after build_send_ops"
+                )
 
-        # Execute all sends via batch_send_recv to get consistent interleaving
-        # and per-peer stream assignment without relying directly on
-        # batch_isend_irecv.
-        logger.info(
-            f"Writer: Executing {len(p2p_op_list)} send ops via batch_send_recv"
-        )
-        batch_send_recv(
-            send_ops=p2p_op_list, recv_ops=[], blocking=True, use_group=True
-        )
-        torch.cuda.synchronize(device=torch.cuda.current_device())
-        duration = time.time() - start_time
-        logger.info(
-            f"Finished sending weights for step {step_id} using NCCL to {len(self.transfer_plan.operations)} ranks({self.recv_ranks_sample}) "
-            f"from rank {rank_coordinate} with {self.num_to_sends} sends, took {duration:.4f} seconds"
-        )
-        compute_statistics(
-            self._history_write_weights_time,
-            step_id,
-            duration,
-            "Send weights using NCCL",
-        )
-        dist.barrier(
-            group=self.weights_update_group, device_ids=[torch.cuda.current_device()]
-        )
-        logger.info(
-            f"Barrier passed for writer step {step_id} with rank {self.transfer_rank}"
-        )
+            # Execute all sends via batch_send_recv to get consistent interleaving
+            # and per-peer stream assignment without relying directly on
+            # batch_isend_irecv.
+            logger.info(
+                f"Writer: Executing {len(p2p_op_list)} send ops via batch_send_recv"
+            )
+            batch_send_recv(
+                send_ops=p2p_op_list, recv_ops=[], blocking=True, use_group=True
+            )
+            device_util.synchronize(device_id=device_util.current_device())
+            if self.enable_mem_debug:
+                print_current_gpu_status(f"writer-{self.transfer_rank} after send")
+            duration = time.time() - start_time
+            logger.info(
+                f"Finished sending weights for step {step_id} using NCCL to {len(self.transfer_plan.operations)} ranks({self.recv_ranks_sample}) "
+                f"from rank {rank_coordinate} with {self.num_to_sends} sends, took {duration:.4f} seconds"
+            )
+            compute_statistics(
+                self._history_write_weights_time,
+                step_id,
+                duration,
+                "Send weights using NCCL",
+            )
+            dist.barrier(
+                group=self.weights_update_group,
+                device_ids=[device_util.current_device()],
+            )
+            logger.info(
+                f"Barrier passed for writer step {step_id} with rank {self.transfer_rank}"
+            )
+        finally:
+            # Explicitly release temporary converted tensors after each step
+            # to avoid carrying peak memory into the next training iteration.
+            if p2p_op_list is not None:
+                p2p_op_list.clear()
+            if parameters is not None:
+                parameters.clear()
+            gc.collect()
+            if self.enable_mem_debug:
+                if device_util.get_device_type() == "cuda":
+                    torch.cuda.empty_cache()
+                elif device_util.get_device_type() == "npu" and hasattr(torch, "npu"):
+                    torch.npu.empty_cache()
+                print_current_gpu_status(f"writer-{self.transfer_rank} after cleanup")
 
     @torch.no_grad()
     def _prepare_params_for_colocate(self):
@@ -225,14 +294,14 @@ class NCCLWeightsWriter(WeightsExchangeShardingWriter):
         start_time = time.time()
         tensors, names = self._prepare_params_for_colocate()
         num_tensors = len(tensors)
-        if self.ipc_backend == "cpu":
+        if self.ipc_backend in ("cpu", "npu"):
             tensors = [t.cpu() for t in tensors]
         logger.info(
             f"Start to group tensors by shape and dtype for rank {self.transfer_rank}"
         )
         # this will copy tensor by concatenate
         group_tensors, metadata = group_tensors_by_shape_and_dtype(tensors)
-        torch.cuda.synchronize(device=torch.cuda.current_device())
+        device_util.synchronize(device_id=device_util.current_device())
         logger.info(
             f"Finished grouping tensors by shape and dtype for rank {self.transfer_rank}"
         )
@@ -251,13 +320,16 @@ class NCCLWeightsWriter(WeightsExchangeShardingWriter):
             f"after offloaded weights for rank {self.transfer_rank}"
         )
 
-        if self.ipc_backend == "cpu":
+        if self.ipc_backend in ("cpu", "npu"):
             group_shared = [tensor.cpu().share_memory_() for tensor in group_tensors]
             serialized_weights = ipc_serialize((group_shared, metadata, names))
         else:
-            group_shared = [tensor.cuda().share_memory_() for tensor in group_tensors]
+            group_shared = [
+                tensor.to(device_util.get_torch_device()).share_memory_()
+                for tensor in group_tensors
+            ]
             serialized_weights = cuda_ipc_serialize((group_shared, metadata, names))
-        torch.cuda.synchronize(device=torch.cuda.current_device())
+        device_util.synchronize(device_id=device_util.current_device())
         logger.info(
             f"Finished serializing ipc weights with {num_tensors} params, and {len(group_shared)} groups "
             f"for rank {self.transfer_rank}"
@@ -266,7 +338,7 @@ class NCCLWeightsWriter(WeightsExchangeShardingWriter):
 
         # Put serialized weights to meta server
         ip_address = get_ip_address()
-        device_id = torch.cuda.current_device()
+        device_id = device_util.current_device()
         key_suffix = f"_{ip_address}_{device_id}_{step_id}"
         serialized_weights_key = f"training_serialized_weights{key_suffix}"
         self.meta_server_client.put_object(
@@ -285,9 +357,10 @@ class NCCLWeightsWriter(WeightsExchangeShardingWriter):
         release_tensors(group_shared)
         del group_tensors
         del group_shared
-        torch.cuda.synchronize(device=torch.cuda.current_device())
+        device_util.synchronize(device_id=device_util.current_device())
         gc.collect()
-        torch.cuda.empty_cache()
+        if device_util.get_device_type() == "cuda":
+            torch.cuda.empty_cache()
         print_current_gpu_status(
             f"after clear group_shared for rank {self.transfer_rank}"
         )

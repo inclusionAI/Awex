@@ -22,6 +22,7 @@ from unittest.mock import patch
 import pytest
 import torch
 
+from awex.util import device as device_util
 from awex.util.common import get_free_port
 from awex.util.process_group import init_weights_update_group, setup_batch_isend_irecv
 from awex.util.tensor_util import (
@@ -471,14 +472,16 @@ class TestCompareAndLogTensorDifferences:
 
 def _batch_isend_irecv_worker(rank, world_size, master_port, result_queue):
     try:
+        from awex.util import device as device_util
+
         os.environ["MASTER_ADDR"] = "localhost"
         os.environ["MASTER_PORT"] = str(master_port)
         os.environ["RANK"] = str(rank)
         os.environ["WORLD_SIZE"] = str(world_size)
-        torch.cuda.set_device(rank)
+        device_util.set_device(rank)
 
         torch.distributed.init_process_group(
-            backend="nccl",
+            backend="hccl" if device_util.get_device_type() == "npu" else "nccl",
             rank=rank,
             world_size=world_size,
             init_method=f"tcp://localhost:{master_port}",
@@ -490,7 +493,7 @@ def _batch_isend_irecv_worker(rank, world_size, master_port, result_queue):
             rank=rank,
             world_size=world_size,
             group_name="test_group",
-            backend="nccl",
+            backend="hccl" if device_util.get_device_type() == "npu" else "nccl",
         )
 
         setup_batch_isend_irecv(process_group, rank, world_size)
@@ -502,13 +505,13 @@ def _batch_isend_irecv_worker(rank, world_size, master_port, result_queue):
 
 
 @pytest.mark.skipif(
-    torch.cuda.device_count() <= 1 or torch.cuda.device_count() % 2 != 0,
-    reason="Only one GPU present or GPU count is not even",
+    device_util.device_count() < 8,
+    reason="Need at least 8 devices for this test.",
 )
 def test_setup_batch_isend_irecv_8_processes():
     """Test setup_batch_isend_irecv with 8 processes."""
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA not available")
+    if not torch.cuda.is_available() and getattr(torch, "npu", None) is None:
+        pytest.skip("CUDA/NPU not available")
 
     world_size = 8
     master_port = get_free_port()

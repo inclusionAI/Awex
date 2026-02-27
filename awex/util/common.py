@@ -31,6 +31,25 @@ from awex import logging
 logger = logging.getLogger(__name__)
 
 
+def _is_allowed_infer_only_alias(
+    extra_key: str, infer_keys: set[str], train_keys: set[str]
+) -> bool:
+    """Return True when infer-only key is a known canonical alias.
+
+    Keep this list intentionally small to avoid silently accepting real mismatches.
+    Current supported alias:
+    - tied embeddings: lm_head.weight <-> model.embed_tokens.weight
+    """
+    if extra_key == "lm_head.weight":
+        return (
+            "model.embed_tokens.weight" in infer_keys
+            and "model.embed_tokens.weight" in train_keys
+        )
+    if extra_key == "model.embed_tokens.weight":
+        return "lm_head.weight" in infer_keys and "lm_head.weight" in train_keys
+    return False
+
+
 def configure_logging(level=logging.INFO, force=True):
     logging.basicConfig(
         level=level,
@@ -54,6 +73,9 @@ def divide(numerator, denominator):
 
 
 def get_ip_address():
+    override = os.environ.get("AWEX_MASTER_ADDR")
+    if override:
+        return override
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect(("8.8.8.8", 80))
@@ -150,24 +172,54 @@ def check_train_infer_params_meta(
     training_params_meta: List,
     infer_parameters_meta: List,
     raise_exception: bool = False,
+    strict_key_match: bool = False,
 ):
     infer_meta = {param_meta.name: param_meta for param_meta in infer_parameters_meta}
     train_meta = {param_meta.name: param_meta for param_meta in training_params_meta}
-    common_params = set(infer_meta.keys()) & set(train_meta.keys())
-    if len(common_params) != len(infer_meta) or len(common_params) != len(train_meta):
-        if len(train_meta) > len(infer_meta):
-            diff = set(train_meta.keys()) - common_params
-        else:
-            diff = set(infer_meta.keys()) - common_params
+    infer_keys = set(infer_meta.keys())
+    train_keys = set(train_meta.keys())
+    common_params = infer_keys & train_keys
+    missing_on_infer = train_keys - infer_keys
+    extra_on_infer = infer_keys - train_keys
+    unsupported_extra_on_infer = {
+        key
+        for key in extra_on_infer
+        if not _is_allowed_infer_only_alias(key, infer_keys, train_keys)
+    }
+    if strict_key_match:
+        mismatched = bool(missing_on_infer or extra_on_infer)
+    else:
+        # Safe two-stage contract:
+        # - train keys must exist in infer canonical ingress
+        # - infer-only keys are allowed only for explicit alias coverage
+        mismatched = bool(missing_on_infer or unsupported_extra_on_infer)
+    if mismatched:
         logger.error(
-            f"Inconsistent parameters meta: "
-            f"train {len(train_meta)} infer {len(infer_meta)} diff keys {diff}"
+            "Inconsistent parameters meta keys: train=%s infer=%s "
+            "missing_on_infer=%s extra_on_infer=%s unsupported_extra_on_infer=%s strict=%s",
+            len(train_meta),
+            len(infer_meta),
+            sorted(missing_on_infer),
+            sorted(extra_on_infer),
+            sorted(unsupported_extra_on_infer),
+            strict_key_match,
         )
         if raise_exception:
             raise ValueError(
-                f"Inconsistent parameters meta for inference and training: "
-                f"{len(common_params)} {len(infer_meta)} {len(train_meta)}, diff keys {diff}"
+                "Inconsistent parameters meta keys: "
+                f"train={len(train_meta)} infer={len(infer_meta)} "
+                f"missing_on_infer={sorted(missing_on_infer)} "
+                f"extra_on_infer={sorted(extra_on_infer)} "
+                f"unsupported_extra_on_infer={sorted(unsupported_extra_on_infer)} "
+                f"strict={strict_key_match}"
             )
+    elif extra_on_infer:
+        logger.info(
+            "Infer meta has extra keys not required by training (allowed alias subset), "
+            "count=%s sample=%s",
+            len(extra_on_infer),
+            sorted(extra_on_infer)[:8],
+        )
     for param_name in common_params:
         infer_param_meta = infer_meta[param_name]
         train_param_meta = train_meta[param_name]

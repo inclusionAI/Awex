@@ -15,10 +15,13 @@
 # specific language governing permissions and limitations
 # under the License.
 
-import torch
+import os
+
 import torch.distributed as dist
 
 from awex.sharding.rank_info import RankInfo
+from awex.util import device as device_util
+from awex.util.mindspeed import ensure_mindspeed_patched
 
 
 def get_mcore_sharding_strategy(model_name: str, rank_info: RankInfo, **kwargs):
@@ -34,11 +37,14 @@ def get_mcore_sharding_strategy(model_name: str, rank_info: RankInfo, **kwargs):
         ep_size=rank_info.ep_size,
         ep_tp_size=rank_info.ep_tp_size,
         rank_info=rank_info,
+        device_backend=device_util.get_device_type(),
         **kwargs,
     )
 
 
 def get_mcore_rank_info() -> RankInfo:
+    # Ensure MindSpeed patches are applied before Megatron parallel_state imports.
+    ensure_mindspeed_patched("get_mcore_rank_info")
     from megatron.core import parallel_state as mpu
 
     dp_size = mpu.get_data_parallel_world_size()
@@ -52,9 +58,16 @@ def get_mcore_rank_info() -> RankInfo:
     ep_size = mpu.get_expert_model_parallel_world_size()
     ep_tp_size = mpu.get_expert_tensor_parallel_world_size()
     ep_tp_rank = mpu.get_expert_tensor_parallel_rank()
+    get_cp_size = getattr(mpu, "get_context_parallel_world_size", None)
+    cp_size = int(get_cp_size()) if callable(get_cp_size) else 1
+    get_cp_rank = getattr(mpu, "get_context_parallel_rank", None)
+    cp_rank = int(get_cp_rank()) if callable(get_cp_rank) else 0
+    cp_mode = os.environ.get("AWEX_CP_MODE")
+    if not cp_mode:
+        cp_mode = "ring" if cp_size > 1 else "none"
     world_size = dist.get_world_size()
     global_rank = dist.get_rank()
-    num_gpu_per_node = torch.cuda.device_count()
+    num_gpu_per_node = device_util.device_count()
     local_rank = dist.get_rank() % num_gpu_per_node
     return RankInfo(
         tp_rank=tp_rank,
@@ -75,4 +88,7 @@ def get_mcore_rank_info() -> RankInfo:
         local_rank=local_rank,
         engine_rank=0,
         is_infer=False,
+        cp_rank=cp_rank,
+        cp_size=cp_size,
+        cp_mode=cp_mode,
     )

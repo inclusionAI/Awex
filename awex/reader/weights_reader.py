@@ -20,7 +20,7 @@ import pickle
 import threading
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import torch
 
@@ -34,6 +34,7 @@ from awex.models.registry import get_infer_weights_converter
 from awex.sharding.param_sharding import (
     get_rank_info_extractor,
 )
+from awex.util import device as device_util
 from awex.util.common import (
     check_train_infer_params_meta,
     compute_statistics,
@@ -46,6 +47,22 @@ from awex.util.tensor_util import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def derive_expected_pp_ranks(
+    infer_params_meta: Sequence[ParameterMeta],
+    local_engine_rank: int,
+) -> List[int]:
+    pp_ranks = set()
+    for param in infer_params_meta:
+        for shard in param.shards:
+            if shard.engine_rank == local_engine_rank:
+                pp_ranks.add(shard.pp_rank)
+    if not pp_ranks:
+        raise ValueError(
+            f"No infer shards found for engine_rank={local_engine_rank}; cannot derive expected_pp_ranks"
+        )
+    return sorted(pp_ranks)
 
 
 class WeightExchangeReader(ABC):
@@ -109,7 +126,13 @@ class WeightsReader(WeightExchangeReader):
         self.engine_rank = self.inference_engine.engine_rank
         self.tp_size = config.tp_size
         self.pp_size = config.pp_size
-        self.infer_world_size = self.num_engines * self.tp_size * self.pp_size
+        # num_engines tracks external inference instances.
+        # For a single vLLM instance with internal DP, total inference ranks must
+        # still include dp_size.
+        self.dp_size = max(1, int(getattr(config, "dp_size", 1) or 1))
+        self.infer_world_size = (
+            self.num_engines * self.tp_size * self.pp_size * self.dp_size
+        )
         self.validated_steps = 0
         self.start_step = -1
         self.weights_validation_steps = config.weights_validation_steps
@@ -118,13 +141,22 @@ class WeightsReader(WeightExchangeReader):
         self.dump_weights_dir_for_validation = (
             config.dump_weights_dir_for_validation or os.getcwd()
         )
+        self.debug_mode_config = config.debug_mode_config or {}
+        self.raise_on_validation_fail = self.debug_mode_config.get(
+            "raise_on_validation_fail", False
+        )
         self.ipc_backend = config.weights_exchange_ipc_backend
+        if device_util.get_device_type() == "npu" and self.ipc_backend == "cuda":
+            logger.info("Switching IPC backend from cuda to cpu for NPU runtime.")
+            self.ipc_backend = "cpu"
         self.timeout = 10000
         self.lock = threading.Lock()
         self.initialized = False
+        self.expected_pp_ranks: List[int] = []
         logger.info(
             f"DP rank id: {self.engine_rank}, num_engines: {self.num_engines}, "
-            f"engine_rank: {self.engine_rank}, infer_world_size: {self.infer_world_size}"
+            f"engine_rank: {self.engine_rank}, infer_world_size: {self.infer_world_size}, "
+            f"tp={self.tp_size}, pp={self.pp_size}, dp={self.dp_size}"
         )
 
     def initialize(self, **kwargs):
@@ -145,12 +177,24 @@ class WeightsReader(WeightExchangeReader):
         logger.info(
             "Finished querying and building parameters meta from all tp workers"
         )
+        self.expected_pp_ranks = derive_expected_pp_ranks(
+            self.parameters_meta, self.engine_rank
+        )
+        logger.info(
+            "Derived expected_pp_ranks for engine %s: %s",
+            self.engine_rank,
+            self.expected_pp_ranks,
+        )
         self.infer_conf = {
             "infer_atten_tp_size": self.meta_resolver.rank0_info.attn_tp_size,
             "router_dtype": getattr(self.hf_config, "router_dtype", "bf16"),
             "infer_engine_config": self.infer_engine_config,
             "hf_config": simple_hf_config(self.hf_config),
             "infer_world_size": self.infer_world_size,
+            "expected_pp_ranks": self.expected_pp_ranks,
+            # Carry runtime backend explicitly so training-side converter can
+            # build meta/slices with the same tensor layout assumptions.
+            "device_backend": device_util.get_device_type(),
         }
         self.meta_server_client.put_object("infer_conf", self.infer_conf)
         logger.info(f"Put inference config {self.infer_conf} to meta server")
@@ -220,7 +264,13 @@ class WeightsReader(WeightExchangeReader):
         infer_conf = pickle.loads(infer_conf_bytes)
         parameters_meta = pickle.loads(parameters_meta_bytes)
         training_params_meta = pickle.loads(training_params_meta_bytes)
-        if weights_comm_backend == "nccl":
+        infer_engine_config = model_context.get("infer_engine_config")
+        if infer_engine_config is not None:
+            if isinstance(infer_engine_config, dict):
+                infer_engine_config["comm_backend"] = weights_comm_backend
+            else:
+                infer_engine_config.comm_backend = weights_comm_backend
+        if weights_comm_backend in ("nccl", "hccl"):
             from awex.reader.nccl_reader import NCCLWorkerWeightsReader
 
             cls = NCCLWorkerWeightsReader
@@ -229,14 +279,15 @@ class WeightsReader(WeightExchangeReader):
 
             cls = AStateWorkerWeightsReader
         scheduler.awes_weights_reader = cls(
-            model,
-            model_context,
-            infer_conf,
-            engine_rank,
-            num_engines,
-            meta_server_addr,
-            parameters_meta,
-            training_params_meta,
+            engine_name=infer_conf.get("engine_name", "sglang"),
+            model=model,
+            model_context=model_context,
+            infer_conf=infer_conf,
+            engine_rank=engine_rank,
+            num_engines=num_engines,
+            meta_server_addr=meta_server_addr,
+            parameters_meta=parameters_meta,
+            training_params_meta=training_params_meta,
             enable_debug_mode=kwargs.get("enable_debug_mode", False),
             debug_mode_config=debug_mode_config,
             disable_pipeline=disable_pipeline,
@@ -265,9 +316,9 @@ class WeightsReader(WeightExchangeReader):
             if self.enable_colocate_mode:
                 self.inference_engine.release_memory_occupation()
                 self._pre_update_weights(step_id=step_id)
-            # TODO(mubai) EPLB: needs to rebuild weights meta if experts rebalance.
             self.inference_engine.execute_task_in_model_worker(
-                self._update_parameters_in_tp_worker, step_id=step_id
+                self._update_parameters_in_tp_worker,
+                step_id=step_id,
             )
             duration = time.time() - start_time
             logger.info(
@@ -313,8 +364,15 @@ class WeightsReader(WeightExchangeReader):
             return
         if (step_id - self.start_step) % self.validate_weights_every_n_steps != 0:
             return
+        model_path = kwargs.get("path")
+        if not model_path:
+            # NCCL/IPC path: no disk checkpoint, just snapshot current params and zero them.
+            self.inference_engine.execute_task_in_model_worker(
+                self._pre_validate_weights_on_tp_worker,
+                step_id=step_id,
+            )
+            return
         logger.info(f"Start to pre-validate weights for step {step_id}")
-        model_path = kwargs["path"]
         start_time = time.time()
         last_log_time = time.time()
         load_key = "weights_ready_for_load"
@@ -381,7 +439,7 @@ class WeightsReader(WeightExchangeReader):
         logger.info(
             f"Start to copy parameters for step {step_id} for consistency check"
         )
-        torch.cuda.synchronize()
+        device_util.synchronize()
         scheduler._asystem_copied_parameters = {}
         for name, param in model.named_parameters():
             scheduler._asystem_copied_parameters[name] = (
@@ -392,8 +450,8 @@ class WeightsReader(WeightExchangeReader):
         )
         for name, param in model.named_parameters():
             param.data.fill_(0)
-            logger.info(f"Set parameter {name} to 0")
-        torch.cuda.synchronize()
+            logger.debug(f"Set parameter {name} to 0")
+        device_util.synchronize()
 
     def _validate_weights(
         self,
@@ -416,11 +474,15 @@ class WeightsReader(WeightExchangeReader):
             dump_weights_list_for_validation=dump_weights_list_for_validation,
             dump_weights_dir_for_validation=dump_weights_dir_for_validation,
         )
+        all_ok = True
+        total_bad = 0
         for tp_rank, tp_results in enumerate(verify_results):
             if not all(tp_results.values()):
                 not_consistent_weights = [
                     name for name, result in tp_results.items() if not result
                 ]
+                total_bad += len(not_consistent_weights)
+                all_ok = False
                 logger.error(
                     f"Weights for step {step_id} is not consistent for tp rank {tp_rank}: {not_consistent_weights}, "
                     f"total {len(tp_results)} weights"
@@ -429,6 +491,18 @@ class WeightsReader(WeightExchangeReader):
                 logger.info(
                     f"Weights for step {step_id} is consistent for tp rank {tp_rank}, "
                     f"total {len(tp_results)} weights"
+                )
+        if all_ok:
+            logger.info(
+                f"[Validation] step {step_id} PASSED across {len(verify_results)} tp ranks"
+            )
+        else:
+            logger.error(
+                f"[Validation] step {step_id} FAILED: {total_bad} inconsistent weights"
+            )
+            if self.raise_on_validation_fail:
+                raise RuntimeError(
+                    f"Awex validation failed for step {step_id} with {total_bad} inconsistent weights"
                 )
 
     @classmethod
@@ -442,7 +516,7 @@ class WeightsReader(WeightExchangeReader):
         model = kwargs["model"]
         scheduler = kwargs["model_context"]["scheduler"]
         logger.info("Start to verify parameters")
-        torch.cuda.synchronize()
+        device_util.synchronize()
         results = {}
         dump_weights_list_for_validation = set(dump_weights_list_for_validation or [])
         for name, tensor_from_hg in scheduler._asystem_copied_parameters.items():
@@ -493,7 +567,7 @@ class WeightsReader(WeightExchangeReader):
             ):
                 results[name] = False
             else:
-                logger.info(f"Weights for {name} is consistent")
+                logger.debug(f"Weights for {name} is consistent")
                 results[name] = True
 
         # Clean up the copied parameters dictionary after verification
@@ -569,11 +643,16 @@ class WorkerWeightsReader:
         self.model_arch_name = self.hf_config.architectures[0]
         self.scheduler = model_context["scheduler"]
         self.infer_engine_config = model_context["infer_engine_config"]
+        self.comm_backend = getattr(self.infer_engine_config, "comm_backend", "nccl")
         self.engine_rank = engine_rank
         self.num_engines = num_engines
         self.enable_debug_mode = enable_debug_mode
-        self.enable_nccl_debug_mode = (debug_mode_config or {}).get(
+        self.debug_mode_config = debug_mode_config or {}
+        self.enable_nccl_debug_mode = self.debug_mode_config.get(
             "enable_nccl_debug_mode", False
+        )
+        self.raise_on_validation_fail = self.debug_mode_config.get(
+            "raise_on_validation_fail", False
         )
         self.disable_pipeline = disable_pipeline
         self.enable_colocate_mode = enable_colocate_mode
@@ -601,8 +680,10 @@ class WorkerWeightsReader:
         )
         self.meta_server_addr = meta_server_addr
         self.meta_server_client = MetaServerClient(*self.meta_server_addr.split(":"))
-        self.weight_converter = get_infer_weights_converter(self.engine_name)(
-            self.model.config,
+        self.weight_converter = get_infer_weights_converter(
+            self.engine_name,
+            self.model_arch_name,
+            hf_config=self.model.config,
             infer_engine_config=self.infer_engine_config,
             rank_info=self.rank_info,
         )
@@ -626,24 +707,73 @@ class WorkerWeightsReader:
         )
         self.timeout = 10000
         self._history_update_weights_time = {}
+        # Some converted parameters (e.g. split MoE gate/up on transposed layouts)
+        # are non-contiguous views. NCCL recv requires contiguous tensors, so we
+        # receive into contiguous buffers and copy back to these views after recv.
+        self._noncontiguous_parameter_views: Dict[str, torch.Tensor] = {}
         logger.info(f"Env varabbles for weights reader: {stripped_env_vars()}")
         logger.info(
             f"Created weights reader for rank {self.rank_info.global_rank}, engine rank {self.engine_rank}"
         )
 
     def initialize(self):
-        self.parameters = {
-            hf_name: hf_param
-            for name, param in self.model.named_parameters()
-            for hf_name, hf_param in self.weight_converter.convert_param(name, param)
-        }
+        self.parameters = {}
+        self._noncontiguous_parameter_views = {}
+        non_contiguous = []
+        non_contiguous_bytes = 0
+        for name, param in self.model.named_parameters():
+            for hf_name, hf_param in self.weight_converter.convert_param(name, param):
+                if hf_param.is_contiguous():
+                    self.parameters[hf_name] = hf_param
+                    continue
+                recv_buffer = torch.empty_like(hf_param).contiguous()
+                recv_buffer.copy_(hf_param)
+                self.parameters[hf_name] = recv_buffer
+                self._noncontiguous_parameter_views[hf_name] = hf_param
+                non_contiguous.append((hf_name, tuple(hf_param.shape)))
+                non_contiguous_bytes += hf_param.numel() * hf_param.element_size()
+        if non_contiguous:
+            sample = ", ".join(f"{name}:{shape}" for name, shape in non_contiguous[:8])
+            logger.info(
+                "Reader rank %s uses contiguous recv buffers for %s non-contiguous params "
+                "(~%.2f MiB, showing up to 8): %s",
+                self.rank_info.global_rank,
+                len(non_contiguous),
+                non_contiguous_bytes / (1024 * 1024),
+                sample,
+            )
+            if len(non_contiguous) > 8:
+                logger.debug(
+                    "Reader rank %s remaining buffered params: %s",
+                    self.rank_info.global_rank,
+                    [name for name, _ in non_contiguous[8:]],
+                )
+        if (
+            getattr(self.hf_config, "tie_word_embeddings", False)
+            and self.rank_info.pp_rank == self.rank_info.pp_size - 1
+            and "lm_head.weight" not in self.parameters
+            and "model.embed_tokens.weight" in self.parameters
+        ):
+            # vLLM ties output weights to embeddings and doesn't expose lm_head.
+            self.parameters["lm_head.weight"] = self.parameters[
+                "model.embed_tokens.weight"
+            ]
+            logger.info(
+                "WeightsReader: added lm_head.weight alias for tied embeddings."
+            )
+
+    def _sync_noncontiguous_parameter_views(self):
+        if not self._noncontiguous_parameter_views:
+            return
+        for name, target_view in self._noncontiguous_parameter_views.items():
+            target_view.copy_(self.parameters[name])
 
     def pre_update_weights(self, step_id, **kwargs):
         pass
 
     def update_weights(self, step_id, **kwargs):
         start_time = time.time()
-        torch.cuda.synchronize()
+        device_util.synchronize()
         if self.enable_colocate_mode:
             self._update_weights_in_colocate_mode(step_id, **kwargs)
         else:
@@ -656,7 +786,7 @@ class WorkerWeightsReader:
         logger.info(
             f"Finished flushing cache for step {step_id} for rank {self.transfer_rank}"
         )
-        torch.cuda.synchronize()
+        device_util.synchronize()
         duration = time.time() - start_time
         compute_statistics(
             self._history_update_weights_time, step_id, duration, "Update weights"
@@ -681,6 +811,7 @@ class WorkerWeightsReader:
                 )
             )
         self.read_tensors(step_id, tensor_pairs, **kwargs)
+        self._sync_noncontiguous_parameter_views()
         self.finish_step(step_id)
         logger.info(
             f"Finished updating weights for step {step_id} for rank {self.engine_rank}-{self.rank_info.global_rank}"

@@ -64,7 +64,7 @@ def count_posix_ipc() -> Dict[str, int]:
         elif path.startswith("/dev/mqueue/"):
             counts["mq"] += 1
         elif "anon_inode:[eventfd]" in str(fd):
-            counts["sem"] += 1  # 近似
+            counts["sem"] += 1  # approximate
 
     return counts
 

@@ -25,7 +25,12 @@ import torch.distributed as dist
 from awex import logging
 from awex.reader.weights_reader import WorkerWeightsReader
 from awex.transfer.nccl_comm import batch_send_recv, nccl_build_recv_ops
-from awex.transfer.transfer_plan import TransferPlanBuilder
+from awex.transfer.transfer_plan import (
+    TransferPlanBuilder,
+    compute_transfer_plan_hash,
+    compute_transfer_plan_stats,
+)
+from awex.util import device as device_util
 from awex.util.common import (
     compute_statistics,
     get_free_port,
@@ -65,6 +70,17 @@ class NCCLWorkerWeightsReader(WorkerWeightsReader):
             self.training_params_meta,
             self.transfer_rank,
         )
+        inter_hash = compute_transfer_plan_hash(self.transfer_plan)
+        logger.info(
+            "Reader rank %s inter plan hash: %s",
+            self.transfer_rank,
+            inter_hash,
+        )
+        logger.info(
+            "Reader rank %s transfer plan stats: %s",
+            self.transfer_rank,
+            compute_transfer_plan_stats(self.transfer_plan),
+        )
         if self.transfer_rank == 0:
             master_address = get_ip_address()
             master_port = get_free_port()
@@ -90,15 +106,38 @@ class NCCLWorkerWeightsReader(WorkerWeightsReader):
             setup_batch_isend_irecv,
         )
 
-        gpu_id = self.scheduler.gpu_id
-        logger.info(
-            f"[NCCLWeightsReader] Set device to {gpu_id} for rank {self.transfer_rank}, "
-            f"device env is {os.environ.get('DEVICE')}, "
-            f"previous device is {torch.cuda.current_device()}, "
-            f"device_count is {torch.cuda.device_count()}, "
-            f"CUDA_VISIBLE_DEVICES env is {os.environ.get('CUDA_VISIBLE_DEVICES')}"
+        gpu_id = getattr(self.scheduler, "gpu_id", None) or getattr(
+            self.scheduler, "local_rank", None
         )
-        torch.cuda.set_device(gpu_id)
+        if gpu_id is None:
+            gpu_id = int(os.environ.get("LOCAL_RANK", 0))
+        device_type = device_util.get_device_type()
+        device_count = device_util.device_count() or 1
+        if device_type == "cuda":
+            prev_device = torch.cuda.current_device()
+            logger.info(
+                f"[NCCLWeightsReader] Set device to {gpu_id} for rank {self.transfer_rank}, "
+                f"device env is {os.environ.get('DEVICE')}, "
+                f"previous device is {prev_device}, "
+                f"device_count is {device_count}, "
+                f"CUDA_VISIBLE_DEVICES env is {os.environ.get('CUDA_VISIBLE_DEVICES')}"
+            )
+            torch.cuda.set_device(gpu_id)
+            barrier_device = torch.cuda.current_device()
+            backend = "nccl"
+            ready_tensor = torch.tensor(1).cuda()
+        else:
+            logger.info(
+                f"[NCCLWeightsReader] Set device to {gpu_id} for rank {self.transfer_rank}, "
+                f"device env is {os.environ.get('DEVICE')}, "
+                f"previous device is {device_util.current_device()}, "
+                f"device_count is {device_count}, "
+                f"{'/'.join(device_util.visible_devices_env_names())} env is {device_util.visible_devices_env_value() or '(unset)'}"
+            )
+            device_util.set_device(gpu_id)
+            barrier_device = device_util.current_device()
+            backend = self.comm_backend
+            ready_tensor = torch.tensor(1, device=device_util.get_torch_device())
         world_size = (
             self.infer_world_size
             if self.enable_colocate_mode
@@ -110,22 +149,21 @@ class NCCLWorkerWeightsReader(WorkerWeightsReader):
             rank=self.transfer_rank,
             world_size=world_size,
             group_name="weights_exchange",
+            backend=backend,
             role="inference",
         )
         logger.info(
             f"Initialized NCCL weights reader for rank {self.transfer_rank}, engine rank {self.engine_rank}"
         )
         # Add a barrier to ensure all processes are ready
-        dist.barrier(
-            group=self.weights_update_group, device_ids=[torch.cuda.current_device()]
-        )
+        dist.barrier(group=self.weights_update_group, device_ids=[barrier_device])
         logger.info(f"Barrier passed for weights reader with rank {self.transfer_rank}")
         if self.transfer_rank == 0:
             logger.info(
                 f"Start to test NCCL ready for rank {self.transfer_rank}, world size {self.transfer_world_size}"
             )
             dist.recv(
-                torch.tensor(1).cuda(),
+                ready_tensor,
                 src=world_size - 1,
                 group=self.weights_update_group,
             )
@@ -137,7 +175,7 @@ class NCCLWorkerWeightsReader(WorkerWeightsReader):
             and self.transfer_rank == self.infer_world_size - 1
         ):
             dist.send(
-                torch.tensor(1).cuda(),
+                ready_tensor,
                 dst=0,
                 group=self.weights_update_group,
             )
@@ -166,7 +204,7 @@ class NCCLWorkerWeightsReader(WorkerWeightsReader):
     def _init_reader_in_colocate_mode(self):
         self.meta_server_client.add_object_to_set(
             "inference_device_rank_entries",
-            (get_ip_address(), torch.cuda.current_device(), self.transfer_rank),
+            (get_ip_address(), device_util.current_device(), self.transfer_rank),
         )
         self.meta_server_client.wait_set_until_size(
             "inference_device_rank_entries", self.infer_world_size, timeout=self.timeout
@@ -228,7 +266,7 @@ class NCCLWorkerWeightsReader(WorkerWeightsReader):
         # We'll get serialized weights from meta server each step instead
         # Get serialized weights from meta server
         ip_address = get_ip_address()
-        device_id = torch.cuda.current_device()
+        device_id = device_util.current_device()
         key = f"training_serialized_weights_{ip_address}_{device_id}_{step_id}"
         logger.info(
             f"Start to get serialized ipc weights {key} for rank {self.rank_coordinate}"
@@ -244,14 +282,14 @@ class NCCLWorkerWeightsReader(WorkerWeightsReader):
         )
         logger.info(f"Open fds before deserialization: {count_open_fds()}")
         # Deserialize weights into tensors
-        if self.ipc_backend == "cpu":
+        if self.ipc_backend in ("cpu", "npu"):
             group_shared, metadata, names = ipc_deserialize(serialized_weights)
             group_shared = [t.to(device_id) for t in group_shared]
         else:
             group_shared, metadata, names = cuda_ipc_deserialize(serialized_weights)
-        torch.cuda.synchronize(device=torch.cuda.current_device())
+        device_util.synchronize(device_id=device_util.current_device())
         tensors = reconstruct_tensors_from_groups(group_shared, metadata)
-        torch.cuda.synchronize(device=torch.cuda.current_device())
+        device_util.synchronize(device_id=device_util.current_device())
         self.deserialized_weights = dict(zip(names, tensors))
         logger.info(
             f"Deserialized {len(self.deserialized_weights)} parameters and {len(group_shared)} groups"
@@ -298,7 +336,10 @@ class NCCLWorkerWeightsReader(WorkerWeightsReader):
         batch_send_recv(
             send_ops=[], recv_ops=p2p_op_list, blocking=True, use_group=True
         )
-        torch.cuda.synchronize(device=torch.cuda.current_device())
+        # Some parameters are represented by contiguous recv buffers in
+        # WorkerWeightsReader; sync them back to model views after comm.
+        self._sync_noncontiguous_parameter_views()
+        device_util.synchronize(device_id=device_util.current_device())
         duration = time.time() - start_time
         logger.info(
             f"Finished receiving weights for step {step_id} using NCCL "
@@ -312,7 +353,7 @@ class NCCLWorkerWeightsReader(WorkerWeightsReader):
             "Receive weights using NCCL",
         )
         dist.barrier(
-            group=self.weights_update_group, device_ids=[torch.cuda.current_device()]
+            group=self.weights_update_group, device_ids=[device_util.current_device()]
         )
         logger.info(
             f"Barrier passed for reader step {step_id} with rank {self.transfer_rank}"
@@ -339,6 +380,8 @@ class NCCLWorkerWeightsReader(WorkerWeightsReader):
             self.parameters,
             step_id=step_id,
         )
+        # Keep model parameter views consistent when recv used contiguous buffers.
+        self._sync_noncontiguous_parameter_views()
         print_current_gpu_status(
             f"after weights update using NCCL for rank {self.rank_coordinate}"
         )
@@ -351,19 +394,20 @@ class NCCLWorkerWeightsReader(WorkerWeightsReader):
             "Receive weights using NCCL",
         )
         ip_address = get_ip_address()
-        device_id = torch.cuda.current_device()
+        device_id = device_util.current_device()
         key_suffix = f"_{ip_address}_{device_id}_{step_id}"
         # Signal completion to training process
         update_finished_key = f"weights_update_finished{key_suffix}"
         self.meta_server_client.put_object(update_finished_key, True)
         dist.barrier(
-            group=self.weights_update_group, device_ids=[torch.cuda.current_device()]
+            group=self.weights_update_group, device_ids=[device_util.current_device()]
         )
         logger.info(
             f"Barrier passed for reader step {step_id} with rank {self.transfer_rank}"
         )
         gc.collect()
-        torch.cuda.empty_cache()
+        if device_util.get_device_type() == "cuda":
+            torch.cuda.empty_cache()
         write_finished_key = f"write_finished{key_suffix}"
         self.meta_server_client.get_object_then_delete(write_finished_key)
         logger.info(

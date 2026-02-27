@@ -25,6 +25,7 @@ from packaging import version
 from torch.multiprocessing import reductions
 
 from awex import logging
+from awex.util import device as device_util
 
 mp.current_process().authkey = b"ipc_serialize_cpu_tensor_authkey"
 
@@ -73,7 +74,11 @@ def _rebuild_cuda_tensor_modified(*args):
 
 
 def _device_to_uuid(device: int) -> str:
-    return str(torch.cuda.get_device_properties(device).uuid)
+    props = device_util.get_device_properties(device)
+    uuid = getattr(props, "uuid", None)
+    if uuid is None:
+        return str(device)
+    return str(uuid)
 
 
 def _device_from_maybe_uuid(device_maybe_uuid: Union[int, str]) -> int:
@@ -81,8 +86,16 @@ def _device_from_maybe_uuid(device_maybe_uuid: Union[int, str]) -> int:
         return device_maybe_uuid
 
     if isinstance(device_maybe_uuid, str):
-        for device in range(torch.cuda.device_count()):
-            if str(torch.cuda.get_device_properties(device).uuid) == device_maybe_uuid:
+        try:
+            return int(device_maybe_uuid)
+        except ValueError:
+            pass
+        for device in range(device_util.device_count()):
+            props = device_util.get_device_properties(device)
+            uuid = getattr(props, "uuid", None)
+            if uuid is not None and str(uuid) == device_maybe_uuid:
+                return device
+            if str(device) == device_maybe_uuid:
                 return device
         raise Exception("Invalid device_uuid=" + device_maybe_uuid)
 

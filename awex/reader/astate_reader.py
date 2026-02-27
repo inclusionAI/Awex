@@ -36,6 +36,11 @@ class AStateWorkerWeightsReader(WorkerWeightsReader):
         )
         from astate import ParallelConfig, create_remote_table
 
+        cp_size = int(getattr(self.rank_info, "cp_size", 1) or 1)
+        cp_rank = int(getattr(self.rank_info, "cp_rank", 0) or 0)
+        if cp_size <= 1:
+            cp_size = 1
+            cp_rank = 0
         config = ParallelConfig.create_inference_config(
             role_size=world_size,
             role_rank=role_rank,
@@ -45,8 +50,8 @@ class AStateWorkerWeightsReader(WorkerWeightsReader):
             tp_rank=self.rank_info.tp_rank,
             pp_size=self.rank_info.pp_size,
             pp_rank=self.rank_info.pp_rank,
-            cp_size=1,
-            cp_rank=0,
+            cp_size=cp_size,
+            cp_rank=cp_rank,
             ep_size=self.rank_info.ep_size,
             ep_rank=self.rank_info.ep_rank,
             etp_size=self.rank_info.ep_tp_size,

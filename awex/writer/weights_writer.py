@@ -36,6 +36,7 @@ from awex.models.registry import get_train_weights_converter
 from awex.sharding.param_sharding import (
     get_rank_info_extractor,
 )
+from awex.util import device as device_util
 from awex.util.common import (
     check_train_infer_params_meta,
     compute_statistics,
@@ -89,8 +90,11 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
         self.infer_conf = None
         self.infer_engine_config = None
         self.model = self.train_engine.model
+        if not isinstance(self.model, (list, tuple)):
+            self.model = [self.model]
         self.hf_config = self.train_engine.hf_config
         self.model_arch_name = self.hf_config.architectures[0]
+        self.comm_backend = getattr(self.train_engine, "comm_backend", "nccl")
         self.validated_steps = 0
         self.start_step = -1
         self.config = self.train_engine.config
@@ -113,6 +117,12 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
         self.dump_weights_dir_for_validation = self.config.get(
             "dump_weights_dir_for_validation", os.getcwd()
         )
+        if (
+            device_util.get_device_type() == "npu"
+            and self.config.get("weights_exchange_ipc_backend", "cuda") == "cuda"
+        ):
+            logger.info("Switching IPC backend from cuda to cpu for NPU runtime.")
+            self.config["weights_exchange_ipc_backend"] = "cpu"
         logger.info(f"Disable pipeline for weights writer: {self.disable_pipeline}")
         logger.info(f"Env variables for weights writer: {stripped_env_vars()}")
         self.lock = threading.Lock()
@@ -120,6 +130,7 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
         self.initialized = False
         self.num_infer_engines = None
         self.engine_name = train_engine.engine_name
+        self.enable_mem_debug = os.environ.get("AWEX_MEM_DEBUG", "0") == "1"
 
     def initialize(self, **kwargs):
         pass
@@ -199,7 +210,13 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
             self.model_arch_name,
             self.hf_config,
             self.rank_info,
-            self.infer_conf,
+            {
+                **self.infer_conf,
+                "train_pp_stage_layer_id_map": (
+                    self.parameter_meta_resolver.get_pp_stage_layer_id_map()
+                ),
+            },
+            tf_config=_maybe_get_tf_config(self.model),
         )
         logger.info("Start to get number of inference engines from meta server")
         self.num_infer_engines = self.meta_server_client.get_object(
@@ -212,20 +229,65 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
         )
 
     @torch.no_grad()
-    def convert_parameters(self):
+    def convert_parameters(self, required_names=None):
         # for megatron vpp, model is a list of modules
-        parameters = [
-            (name, param.detach())
-            for model in self.model
-            for name, param in get_mcore_model_parameters(model).items()
-        ]
+        parameters = []
+        for vp_stage, model in enumerate(self.model):
+            parameters.extend(
+                (vp_stage, name, param.detach())
+                for name, param in get_mcore_model_parameters(model).items()
+            )
         logger.info(f"[Writer {self.transfer_rank}] Start to convert parameters")
         converted = {}
-        for name, param in parameters:
-            for hf_name, hf_param in self.weight_converter.convert_param(name, param):
+        required = set(required_names) if required_names else None
+        for vp_stage, name, param in parameters:
+            for hf_name, hf_param in self.weight_converter.convert_param(
+                name, param, vp_stage=vp_stage
+            ):
+                if required is not None and hf_name not in required:
+                    continue
                 converted[hf_name] = hf_param
-        logger.info(f"[Writer {self.transfer_rank}] Finished converting parameters")
+        if (
+            getattr(self.hf_config, "tie_word_embeddings", False)
+            and self.rank_info.pp_rank == self.rank_info.pp_size - 1
+            and "lm_head.weight" not in converted
+            and "model.embed_tokens.weight" in converted
+            and (required is None or "lm_head.weight" in required)
+        ):
+            converted["lm_head.weight"] = converted["model.embed_tokens.weight"]
+        if required is not None:
+            logger.info(
+                "[Writer %s] Finished converting parameters: selected %s / required %s",
+                self.transfer_rank,
+                len(converted),
+                len(required),
+            )
+        else:
+            logger.info(f"[Writer {self.transfer_rank}] Finished converting parameters")
+        if self.enable_mem_debug:
+            self._log_converted_tensor_stats(converted, required)
         return converted
+
+    def _log_converted_tensor_stats(self, converted, required):
+        if not converted:
+            logger.info("[Writer %s][MEM] converted is empty", self.transfer_rank)
+            return
+        total_bytes = 0
+        top_items = []
+        for name, tensor in converted.items():
+            nbytes = int(tensor.numel()) * int(tensor.element_size())
+            total_bytes += nbytes
+            top_items.append((nbytes, name, tuple(tensor.shape), str(tensor.dtype)))
+        top_items.sort(reverse=True)
+        sample = top_items[:8]
+        logger.info(
+            "[Writer %s][MEM] converted tensors: count=%s required=%s total_bytes=%s top=%s",
+            self.transfer_rank,
+            len(converted),
+            0 if required is None else len(required),
+            total_bytes,
+            sample,
+        )
 
     @torch.no_grad()
     def write_weights(self, step_id, **kwargs):
@@ -306,34 +368,31 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
 
     def _write_weights(self, step_id, **kwargs):
         logger.info(f"Writing weights for step {step_id}")
-        parameters = [
-            (name, param)
-            for model in self.model
-            for name, param in get_mcore_model_parameters(model).items()
-        ]
         logger.info(f"GPU status before write weights:\n{get_gpu_status()}")
-        for name, param in parameters:
-            temp_parameters = self.weight_converter.convert_param(name, param)
-            temp_parameters = dict(temp_parameters)
-            tensor_pairs = []
-            for name, parameter in temp_parameters.items():
-                if name not in self.current_worker_parameters_map:
-                    raise ValueError(
-                        f"Parameter {name} not found in current worker parameters map"
-                    )
-                param_meta = self.current_worker_parameters_map[name]
-                assert len(param_meta.shards) == 1
-                tensor_pairs.append(
-                    (
-                        name,
-                        parameter,
-                        param_meta.shards[0],
-                        param_meta,
-                    )
+        for vp_stage, model in enumerate(self.model):
+            for name, param in get_mcore_model_parameters(model).items():
+                temp_parameters = self.weight_converter.convert_param(
+                    name, param, vp_stage=vp_stage
                 )
-            self.write_tensors(step_id, tensor_pairs, **kwargs)
-            temp_parameters.clear()
-        del parameters
+                temp_parameters = dict(temp_parameters)
+                tensor_pairs = []
+                for name, parameter in temp_parameters.items():
+                    if name not in self.current_worker_parameters_map:
+                        raise ValueError(
+                            f"Parameter {name} not found in current worker parameters map"
+                        )
+                    param_meta = self.current_worker_parameters_map[name]
+                    assert len(param_meta.shards) == 1
+                    tensor_pairs.append(
+                        (
+                            name,
+                            parameter,
+                            param_meta.shards[0],
+                            param_meta,
+                        )
+                    )
+                self.write_tensors(step_id, tensor_pairs, **kwargs)
+                temp_parameters.clear()
         gc.collect()
         logger.info(f"GPU status after write weights:\n{get_gpu_status()}")
         if self.enable_colocate_mode:
@@ -361,6 +420,8 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
         if (step_id - self.start_step) % self.validate_weights_every_n_steps != 0:
             return
         self.validated_steps += 1
+        model_path = kwargs.get("path")
+        need_converted_dump = bool(self.dump_weights_list_for_validation)
         for model in self.model:
             for name, parameter in model.named_parameters():
                 if name in self.dump_weights_list_for_validation:
@@ -373,6 +434,9 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
                     logger.info(
                         f"[Writer] Saved parameter(native) {name} to {abs_path}"
                     )
+        # NCCL/IPC path without conversion dumps: skip expensive conversion entirely.
+        if not model_path and not need_converted_dump:
+            return
         parameters = self.convert_parameters()
         for name, parameter in parameters.items():
             if name in self.dump_weights_list_for_validation:
@@ -383,7 +447,9 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
                 )
                 torch.save(parameter.detach().cpu(), abs_path)
                 logger.info(f"[Writer] Saved parameter(converted) {name} to {abs_path}")
-        model_path = kwargs["path"]
+        if not model_path:
+            # NCCL/IPC path: no disk checkpoint to validate against.
+            return
         logger.info(
             f"Start to write weights for step {step_id} to {model_path} for weights validation"
         )
@@ -438,7 +504,7 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
 def get_weights_exchange_writer(train_engine) -> WeightExchangeWriter:
     if train_engine.comm_backend == "file":
         return FileWeightExchangeWriter(train_engine)
-    elif train_engine.comm_backend == "nccl":
+    elif train_engine.comm_backend in ("nccl", "hccl"):
         from awex.writer.nccl_writer import NCCLWeightsWriter
 
         return NCCLWeightsWriter(train_engine)
@@ -449,3 +515,14 @@ def get_weights_exchange_writer(train_engine) -> WeightExchangeWriter:
     raise ValueError(
         f"Unsupported weights exchange comm backend: {train_engine.comm_backend}"
     )
+
+
+def _maybe_get_tf_config(models):
+    if not isinstance(models, (list, tuple)):
+        models = [models]
+    for model in models:
+        for attr in ("transformer_config", "config"):
+            cfg = getattr(model, attr, None)
+            if cfg is not None:
+                return cfg
+    return None

@@ -20,7 +20,6 @@ import os
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 
-import torch
 import torch.distributed as dist
 
 from awex import logging
@@ -30,6 +29,7 @@ from awex.transfer.nccl_comm import (
     validate_rank_mappings,
 )
 from awex.transfer.transfer_plan import slice_tensor
+from awex.util import device as device_util
 
 logger = logging.getLogger(__name__)
 hang_detector = ThreadPoolExecutor(max_workers=1)
@@ -41,9 +41,10 @@ class NcclColocateStreamBatchTransport:
     def __init__(self, transfer_rank, world_size):
         self.transfer_rank = transfer_rank
         self.world_size = world_size
-        # Initialize a fixed pool of CUDA streams
+        # Initialize a fixed pool of device streams (CUDA/NPU)
         self._stream_pool = [
-            torch.cuda.Stream() for _ in range(min(self.MAX_STREAMS, world_size))
+            device_util.create_stream()
+            for _ in range(min(self.MAX_STREAMS, world_size))
         ]
 
     def update_weights_in_colocate_mode(
@@ -169,7 +170,7 @@ class NcclColocateStreamBatchTransport:
             step_id,
         )
 
-        torch.cuda.synchronize()
+        device_util.synchronize()
         future.set_result(True)
         duration = time.time() - start_time
         logger.info(
@@ -270,7 +271,7 @@ class NcclColocateStreamBatchTransport:
                 f"phase1={num_ops} ops, phase2={num_ops2} ops, "
                 f"took {round_duration:.4f}s"
             )
-        torch.cuda.synchronize()
+        device_util.synchronize()
         duration = time.time() - start_time
         logger.info(f"{prefix} All {num_rounds} rounds completed in {duration:.4f}s")
 
@@ -326,7 +327,7 @@ class NcclColocateStreamBatchTransport:
                     # Use the stream allocated to this peer to maintain ordering
                     stream_idx = peer_to_stream_idx[peer_rank]
                     stream = self._stream_pool[stream_idx]
-                    with torch.cuda.stream(stream):
+                    with device_util.stream(stream):
                         result = p2p_op.op(
                             p2p_op.tensor, p2p_op.peer, group=p2p_op.group
                         )

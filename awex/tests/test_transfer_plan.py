@@ -32,6 +32,9 @@ from awex.transfer.transfer_plan import (
     ShardOffset,
     TransferPlan,
     TransferPlanBuilder,
+    compute_transfer_plan_hash,
+    compute_transfer_plan_stats,
+    normalize_rank_axes,
     slice_tensor,
 )
 
@@ -79,6 +82,63 @@ class TestTransferPlanBuilder:
         assert len(result) > 0
         assert all(isinstance(op, CommunicationOperation) for op in result)
 
+    def test_build_weights_mapping_operations_infer_superset_allowed(self):
+        """Infer-only tied-embedding alias can be accepted in non-strict mode."""
+        builder = TransferPlanBuilder(infer_world_size=2, train_world_size=1)
+        infer_meta = [
+            self._create_test_parameter_meta("param1"),
+            self._create_test_parameter_meta("model.embed_tokens.weight"),
+            self._create_test_parameter_meta("lm_head.weight"),
+        ]
+        train_meta = [
+            self._create_test_parameter_meta("param1"),
+            self._create_test_parameter_meta("model.embed_tokens.weight"),
+        ]
+
+        result = builder.build_weights_mapping_operations(infer_meta, train_meta)
+        assert len(result) > 0
+        assert all(isinstance(op, CommunicationOperation) for op in result)
+
+    def test_build_weights_mapping_operations_unknown_infer_extra_fails(self):
+        """Non-whitelisted infer-only extra keys should still fail in non-strict mode."""
+        builder = TransferPlanBuilder(infer_world_size=2, train_world_size=1)
+        infer_meta = [
+            self._create_test_parameter_meta("param1"),
+            self._create_test_parameter_meta("param_extra"),
+        ]
+        train_meta = [self._create_test_parameter_meta("param1")]
+
+        with pytest.raises(ValueError, match="unsupported_extra_on_infer"):
+            builder.build_weights_mapping_operations(infer_meta, train_meta)
+
+    def test_build_weights_mapping_operations_train_missing_on_infer_fails(self):
+        """Train keys missing from infer canonical meta must fail."""
+        builder = TransferPlanBuilder(infer_world_size=2, train_world_size=1)
+        infer_meta = [self._create_test_parameter_meta("param1")]
+        train_meta = [
+            self._create_test_parameter_meta("param1"),
+            self._create_test_parameter_meta("param_missing"),
+        ]
+
+        with pytest.raises(ValueError, match="missing_on_infer"):
+            builder.build_weights_mapping_operations(infer_meta, train_meta)
+
+    def test_build_weights_mapping_operations_strict_mode_rejects_infer_extra(self):
+        """Strict mode keeps legacy exact-key behavior."""
+        builder = TransferPlanBuilder(
+            infer_world_size=2,
+            train_world_size=1,
+            strict_param_key_match=True,
+        )
+        infer_meta = [
+            self._create_test_parameter_meta("param1"),
+            self._create_test_parameter_meta("param_extra"),
+        ]
+        train_meta = [self._create_test_parameter_meta("param1")]
+
+        with pytest.raises(ValueError, match="extra_on_infer"):
+            builder.build_weights_mapping_operations(infer_meta, train_meta)
+
     def test_build_parameter_communication_plan_no_replicas(self):
         """Test _build_parameter_communication_plan with no replicas."""
         builder = TransferPlanBuilder(infer_world_size=2, train_world_size=1)
@@ -92,6 +152,150 @@ class TestTransferPlanBuilder:
             builder._build_parameter_communication_plan(
                 "param1", inference_meta, training_meta
             )
+
+    def test_build_parameter_plan_allows_distinct_cp_replicas(self):
+        builder = TransferPlanBuilder(infer_world_size=2, train_world_size=2)
+
+        inference_meta = self._create_test_parameter_meta("param1", global_shape=(4, 4))
+
+        cp0_shard = self._create_test_shard_meta(
+            global_offset=(0, 0),
+            shape=(4, 4),
+            global_rank=0,
+            cp_rank=0,
+            cp_size=2,
+            cp_mode="ring",
+        )
+        cp1_shard = self._create_test_shard_meta(
+            global_offset=(1, 0),
+            shape=(3, 4),
+            global_rank=1,
+            cp_rank=1,
+            cp_size=2,
+            cp_mode="ring",
+        )
+        training_meta = ParameterMeta(
+            name="param1",
+            global_numel=16,
+            global_shape=(4, 4),
+            dtype=torch.float32,
+            shards=[cp0_shard, cp1_shard],
+            replicas=[
+                ParameterReplicaMeta(shards=[cp0_shard]),
+                ParameterReplicaMeta(shards=[cp1_shard]),
+            ],
+        )
+
+        ops = builder._build_parameter_communication_plan(
+            "param1", inference_meta, training_meta
+        )
+        assert ops
+
+    def test_build_parameter_plan_uses_original_training_replica_order(self):
+        builder = TransferPlanBuilder(infer_world_size=2, train_world_size=2)
+        inference_meta = self._create_test_parameter_meta("param1", global_shape=(4, 4))
+
+        cp1_shard = self._create_test_shard_meta(
+            global_offset=(0, 0),
+            shape=(4, 4),
+            global_rank=1,
+            cp_rank=1,
+            cp_size=2,
+            cp_mode="ring",
+        )
+        cp0_shard = self._create_test_shard_meta(
+            global_offset=(0, 0),
+            shape=(4, 4),
+            global_rank=0,
+            cp_rank=0,
+            cp_size=2,
+            cp_mode="ring",
+        )
+        training_meta = ParameterMeta(
+            name="param1",
+            global_numel=16,
+            global_shape=(4, 4),
+            dtype=torch.float32,
+            shards=[cp1_shard, cp0_shard],
+            replicas=[
+                ParameterReplicaMeta(shards=[cp1_shard]),
+                ParameterReplicaMeta(shards=[cp0_shard]),
+            ],
+        )
+
+        ops = builder._build_parameter_communication_plan(
+            "param1", inference_meta, training_meta
+        )
+        assert ops
+        assert all(op.send_rank == builder.infer_world_size + 1 for op in ops)
+
+    def test_build_parameter_plan_handles_lm_head_cp_replicas_without_special_checks(
+        self,
+    ):
+        builder = TransferPlanBuilder(infer_world_size=2, train_world_size=2)
+        inference_meta = self._create_test_parameter_meta(
+            "lm_head.weight", global_shape=(4, 4)
+        )
+
+        # CP replicas are treated as normal replicas; no CP-specific equivalence check.
+        cp0_shard = ParameterShardMeta(
+            tp_rank=0,
+            attn_tp_rank=0,
+            pp_rank=0,
+            ep_rank=0,
+            ep_tp_rank=0,
+            global_rank=0,
+            world_size=2,
+            engine_rank=0,
+            name="lm_head.weight",
+            shape=(4, 4),
+            numel=16,
+            dtype=torch.float32,
+            global_offset=(0, 0),
+            sharding_type=ShardingType.TP_SHARDING,
+            num_shards=1,
+            sharding_dim=0,
+            cp_rank=0,
+            cp_size=2,
+            cp_mode="ring",
+        )
+        cp1_shard = ParameterShardMeta(
+            tp_rank=0,
+            attn_tp_rank=1,
+            pp_rank=0,
+            ep_rank=0,
+            ep_tp_rank=0,
+            global_rank=1,
+            world_size=2,
+            engine_rank=0,
+            name="lm_head.weight",
+            shape=(4, 4),
+            numel=16,
+            dtype=torch.float32,
+            global_offset=(0, 0),
+            sharding_type=ShardingType.TP_SHARDING,
+            num_shards=1,
+            sharding_dim=0,
+            cp_rank=1,
+            cp_size=2,
+            cp_mode="ring",
+        )
+        training_meta = ParameterMeta(
+            name="lm_head.weight",
+            global_numel=16,
+            global_shape=(4, 4),
+            dtype=torch.float32,
+            shards=[cp0_shard, cp1_shard],
+            replicas=[
+                ParameterReplicaMeta(shards=[cp0_shard]),
+                ParameterReplicaMeta(shards=[cp1_shard]),
+            ],
+        )
+
+        ops = builder._build_parameter_communication_plan(
+            "lm_head.weight", inference_meta, training_meta
+        )
+        assert ops
 
     def test_create_shard_offset_for_replica_no_shards(self):
         """Test _create_shard_offset_for_replica with no shards."""
@@ -335,6 +539,9 @@ class TestTransferPlanBuilder:
         shape: Tuple[int, ...] = (2, 2),
         global_rank: int = 0,
         dtype: torch.dtype = torch.float32,
+        cp_rank: int | None = None,
+        cp_size: int | None = None,
+        cp_mode: str | None = None,
     ) -> ParameterShardMeta:
         """Helper method to create test ParameterShardMeta."""
         # Calculate numel safely
@@ -344,6 +551,14 @@ class TestTransferPlanBuilder:
             numel = shape[0]
         else:
             numel = shape[0] * shape[1]
+
+        extra = {}
+        if cp_rank is not None:
+            extra["cp_rank"] = cp_rank
+        if cp_size is not None:
+            extra["cp_size"] = cp_size
+        if cp_mode is not None:
+            extra["cp_mode"] = cp_mode
 
         return ParameterShardMeta(
             tp_rank=0,
@@ -362,6 +577,7 @@ class TestTransferPlanBuilder:
             sharding_type=ShardingType.NO_SHARDING,
             num_shards=1,
             sharding_dim=0,
+            **extra,
         )
 
     def _create_test_parameter_meta(
@@ -513,3 +729,222 @@ class TestTransferPlan:
         plan = TransferPlan(operations=operations)
         assert plan.operations == operations
         assert len(plan.operations) == 0
+
+    def test_transfer_plan_inter_operations_compatibility(self):
+        """New inter_operations field should remain backward-compatible."""
+        op = CommunicationOperation(
+            send_rank=2,
+            send_shard_meta=ParameterShardMeta(
+                tp_rank=0,
+                attn_tp_rank=0,
+                pp_rank=0,
+                ep_rank=0,
+                ep_tp_rank=0,
+                global_rank=0,
+                world_size=3,
+                engine_rank=0,
+                name="p",
+                shape=(2,),
+                numel=2,
+                dtype=torch.float32,
+                global_offset=(0,),
+                sharding_type=ShardingType.NO_SHARDING,
+                num_shards=1,
+                sharding_dim=0,
+            ),
+            send_offset=(0,),
+            recv_rank=0,
+            recv_shard_meta=ParameterShardMeta(
+                tp_rank=0,
+                attn_tp_rank=0,
+                pp_rank=0,
+                ep_rank=0,
+                ep_tp_rank=0,
+                global_rank=0,
+                world_size=3,
+                engine_rank=0,
+                name="p",
+                shape=(2,),
+                numel=2,
+                dtype=torch.float32,
+                global_offset=(0,),
+                sharding_type=ShardingType.NO_SHARDING,
+                num_shards=1,
+                sharding_dim=0,
+            ),
+            recv_offset=(0,),
+            overlap_shape=(2,),
+            train_slices=(slice(0, 2),),
+            inf_slices=(slice(0, 2),),
+        )
+        inter = {0: [op]}
+        plan = TransferPlan(inter_operations=inter)
+        assert plan.operations == inter
+        assert plan.inter_operations == inter
+
+    def test_compute_transfer_plan_hash_is_stable(self):
+        send_shard = ParameterShardMeta(
+            tp_rank=0,
+            attn_tp_rank=0,
+            pp_rank=0,
+            ep_rank=0,
+            ep_tp_rank=0,
+            global_rank=0,
+            world_size=2,
+            engine_rank=0,
+            name="hash_param",
+            shape=(2,),
+            numel=2,
+            dtype=torch.float32,
+            global_offset=(0,),
+            sharding_type=ShardingType.NO_SHARDING,
+            num_shards=1,
+            sharding_dim=0,
+        )
+        recv_shard = ParameterShardMeta(
+            tp_rank=0,
+            attn_tp_rank=0,
+            pp_rank=0,
+            ep_rank=0,
+            ep_tp_rank=0,
+            global_rank=0,
+            world_size=2,
+            engine_rank=0,
+            name="hash_param",
+            shape=(2,),
+            numel=2,
+            dtype=torch.float32,
+            global_offset=(0,),
+            sharding_type=ShardingType.NO_SHARDING,
+            num_shards=1,
+            sharding_dim=0,
+        )
+        inter_op = CommunicationOperation(
+            send_rank=1,
+            send_shard_meta=send_shard,
+            send_offset=(0,),
+            recv_rank=0,
+            recv_shard_meta=recv_shard,
+            recv_offset=(0,),
+            overlap_shape=(2,),
+            train_slices=(slice(0, 2),),
+            inf_slices=(slice(0, 2),),
+        )
+        plan = TransferPlan(inter_operations={0: [inter_op]})
+        h1 = compute_transfer_plan_hash(plan)
+        h2 = compute_transfer_plan_hash(plan)
+        assert h1 == h2
+
+    def test_compute_transfer_plan_stats(self):
+        send_shard = ParameterShardMeta(
+            tp_rank=0,
+            attn_tp_rank=0,
+            pp_rank=0,
+            ep_rank=0,
+            ep_tp_rank=0,
+            global_rank=0,
+            world_size=2,
+            engine_rank=0,
+            name="stats_param",
+            shape=(2,),
+            numel=2,
+            dtype=torch.float32,
+            global_offset=(0,),
+            sharding_type=ShardingType.NO_SHARDING,
+            num_shards=1,
+            sharding_dim=0,
+        )
+        recv_shard = ParameterShardMeta(
+            tp_rank=0,
+            attn_tp_rank=0,
+            pp_rank=0,
+            ep_rank=0,
+            ep_tp_rank=0,
+            global_rank=0,
+            world_size=2,
+            engine_rank=0,
+            name="stats_param",
+            shape=(2,),
+            numel=2,
+            dtype=torch.float32,
+            global_offset=(0,),
+            sharding_type=ShardingType.NO_SHARDING,
+            num_shards=1,
+            sharding_dim=0,
+        )
+        inter_op = CommunicationOperation(
+            send_rank=1,
+            send_shard_meta=send_shard,
+            send_offset=(0,),
+            recv_rank=0,
+            recv_shard_meta=recv_shard,
+            recv_offset=(0,),
+            overlap_shape=(2,),
+            train_slices=(slice(0, 2),),
+            inf_slices=(slice(0, 2),),
+        )
+        plan = TransferPlan(inter_operations={0: [inter_op]})
+        stats = compute_transfer_plan_stats(plan)
+        assert stats["inter"]["peer_count"] == 1
+        assert stats["inter"]["op_count"] == 1
+        assert stats["inter"]["numel"] == 2
+        assert stats["inter"]["bytes"] == 8
+        assert stats["total"]["op_count"] == 1
+        assert stats["total"]["numel"] == 2
+        assert stats["total"]["bytes"] == 8
+        assert stats["inter_hash"] == compute_transfer_plan_hash(plan)
+        assert stats["full_hash"] == compute_transfer_plan_hash(plan)
+
+
+class TestNormalizeRankAxes:
+    def test_attention_uses_attn_tp(self):
+        class _RankInfo:
+            pp_rank = 0
+            tp_rank = 1
+            tp_size = 4
+            attn_tp_rank = 3
+            attn_tp_size = 8
+            ep_rank = 0
+            ep_size = 1
+            ep_tp_rank = 0
+            ep_tp_size = 1
+
+        axes = normalize_rank_axes("attention", _RankInfo())
+        assert axes.tp_rank == 3
+        assert axes.tp_size == 8
+
+    def test_dense_uses_generic_tp(self):
+        class _RankInfo:
+            pp_rank = 0
+            tp_rank = 2
+            tp_size = 4
+            attn_tp_rank = 1
+            attn_tp_size = 8
+            ep_rank = 0
+            ep_size = 1
+            ep_tp_rank = 0
+            ep_tp_size = 1
+
+        axes = normalize_rank_axes("dense_other", _RankInfo())
+        assert axes.tp_rank == 2
+        assert axes.tp_size == 4
+
+    def test_cp_fields_are_not_part_of_normalized_axes(self):
+        class _RankInfo:
+            pp_rank = 0
+            tp_rank = 0
+            tp_size = 1
+            attn_tp_rank = 0
+            attn_tp_size = 1
+            ep_rank = 0
+            ep_size = 1
+            ep_tp_rank = 0
+            ep_tp_size = 1
+            cp_rank = 1
+            cp_size = 2
+            cp_mode = "ring"
+
+        axes = normalize_rank_axes("attention", _RankInfo())
+        assert not hasattr(axes, "cp_rank")
+        assert not hasattr(axes, "cp_size")
+        assert not hasattr(axes, "cp_mode")

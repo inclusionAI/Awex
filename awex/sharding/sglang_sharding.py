@@ -16,6 +16,7 @@
 # under the License.
 
 from awex.sharding.rank_info import RankInfo
+from awex.util import device as device_util
 
 
 def get_sglang_sharding_strategy(
@@ -27,6 +28,13 @@ def get_sglang_sharding_strategy(
     from awex.models import get_sharding_strategy
 
     cls = get_sharding_strategy(model_name)
+    device_backend = getattr(infer_engine_config, "device_backend", None) or getattr(
+        infer_engine_config, "device_type", None
+    )
+    if isinstance(device_backend, str):
+        device_backend = device_backend.strip().lower()
+    if device_backend is None or device_backend == "":
+        device_backend = device_util.get_device_type()
     return cls(
         engine_name="sglang",
         enable_dp_attention=infer_engine_config.enable_dp_attention,
@@ -36,6 +44,7 @@ def get_sglang_sharding_strategy(
         ep_size=infer_engine_config.ep_size,
         ep_tp_size=rank_info.ep_tp_size,
         rank_info=rank_info,
+        device_backend=device_backend,
         **kwargs,
     )
 
@@ -59,6 +68,18 @@ def get_sglang_rank_info(model_context, engine_rank) -> RankInfo:
         ep_rank = 0
         ep_tp_size = 1
         ep_tp_rank = 0
+    cp_size = int(
+        model_context.get(
+            "cp_size", getattr(infer_engine_config, "context_parallel_size", 1)
+        )
+        or 1
+    )
+    cp_rank = int(model_context.get("cp_rank", 0) or 0)
+    cp_mode = model_context.get(
+        "cp_mode", getattr(infer_engine_config, "context_parallel_mode", None)
+    )
+    if not cp_mode:
+        cp_mode = "ring" if cp_size > 1 else "none"
     return RankInfo(
         tp_rank=tp_rank,
         tp_size=tp_size,
@@ -78,4 +99,7 @@ def get_sglang_rank_info(model_context, engine_rank) -> RankInfo:
         engine_rank=engine_rank,
         local_rank=model_context["local_rank"],
         is_infer=True,
+        cp_rank=cp_rank,
+        cp_size=cp_size,
+        cp_mode=cp_mode,
     )

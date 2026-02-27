@@ -64,6 +64,9 @@ class ParameterShardMeta:
     sharding_type: ShardingType = ShardingType.NO_SHARDING
     num_shards: int = 1
     sharding_dim: int = 0
+    cp_rank: int = 0
+    cp_size: int = 1
+    cp_mode: str = "none"
 
 
 @dataclass(slots=True)
@@ -114,6 +117,9 @@ class ParameterMeta:
                     global_rank=shard.global_rank,
                     world_size=shard.world_size,
                     engine_rank=engine_rank,
+                    cp_rank=shard.cp_rank,
+                    cp_size=shard.cp_size,
+                    cp_mode=shard.cp_mode,
                     name=shard.name,
                     shape=shard.shape,
                     numel=shard.numel,

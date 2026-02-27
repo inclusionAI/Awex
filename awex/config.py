@@ -53,7 +53,7 @@ class InferenceConfig:
     engine_rank: int = 0
     # the address of the meta server: `ip:port`
     meta_server_addr: Optional[str] = None
-    # weights exchange communication backend
+    # weights exchange communication backend (file/nccl/hccl/astate)
     comm_backend: str = "file"
     # how much steps with weights validation, if enabled, weights update will use both file and transfer and
     # compare the weights

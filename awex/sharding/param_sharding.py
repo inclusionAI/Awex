@@ -125,6 +125,7 @@ class ShardingStrategy:
         ep_size,
         ep_tp_size,
         rank_info: RankInfo,
+        device_backend: str | None = None,
         **kwargs,
     ) -> None:
         self.engine_name = engine_name
@@ -135,13 +136,22 @@ class ShardingStrategy:
         self.ep_size = ep_size
         self.ep_tp_size = ep_tp_size
         self.rank_info = rank_info
+        self.device_backend = device_backend
+
+    def _maybe_adjust_sharding_dim(self, parameter_name: str, sharding_dim: int) -> int:
+        # Sharding dimensions are defined in canonical HF/Megatron orientation.
+        # Inference-side converters should project runtime-specific layouts
+        # (e.g. vLLM-ascend transposed MoE tensors) back to canonical views.
+        return sharding_dim
 
     def get_attention_sharding_strategy(self, parameter_name, **kwargs):
         """
         Determine sharding strategy for attention parameters.
         Returns (ShardingType, num_shards).
         """
-        sharding_dim = get_default_sharding_dim(parameter_name)
+        sharding_dim = self._maybe_adjust_sharding_dim(
+            parameter_name, get_default_sharding_dim(parameter_name)
+        )
         if self.enable_dp_attention:
             attn_tp_size = self.rank_info.attn_tp_size
             if attn_tp_size > 1:
@@ -166,7 +176,9 @@ class ShardingStrategy:
         Determine sharding strategy for MLP parameters.
         Returns (ShardingType, num_shards).
         """
-        sharding_dim = get_default_sharding_dim(parameter_name)
+        sharding_dim = self._maybe_adjust_sharding_dim(
+            parameter_name, get_default_sharding_dim(parameter_name)
+        )
         tp_size = self.rank_info.tp_size
         # Default strategy: shard MLP weights across tensor-parallel
         # ranks whenever tp_size > 1. Model-specific strategies can
@@ -181,7 +193,9 @@ class ShardingStrategy:
         Returns (ShardingType, num_shards).
         """
         if self.engine_name == "mcore":
-            sharding_dim = get_default_sharding_dim(parameter_name)
+            sharding_dim = self._maybe_adjust_sharding_dim(
+                parameter_name, get_default_sharding_dim(parameter_name)
+            )
             if self.tp_size > 1:
                 return ShardingType.TP_SHARDING, sharding_dim, self.tp_size
             else:
@@ -194,7 +208,9 @@ class ShardingStrategy:
         Determine sharding strategy for expert model parameters.
         Returns (ShardingType, num_shards).
         """
-        sharding_dim = get_default_sharding_dim(parameter_name)
+        sharding_dim = self._maybe_adjust_sharding_dim(
+            parameter_name, get_default_sharding_dim(parameter_name)
+        )
         if self.ep_size > 1 and self.ep_tp_size > 1:
             return ShardingType.EP_TP_SHARDING, sharding_dim, self.ep_tp_size
         elif self.ep_size > 1:
@@ -209,7 +225,9 @@ class ShardingStrategy:
         Determine sharding strategy for LM head parameters.
         Returns (ShardingType, num_shards).
         """
-        sharding_dim = get_default_sharding_dim(parameter_name)
+        sharding_dim = self._maybe_adjust_sharding_dim(
+            parameter_name, get_default_sharding_dim(parameter_name)
+        )
         if self.enable_dp_lm_head:
             attn_tp_size = self.rank_info.attn_tp_size
             if attn_tp_size > 1:
@@ -230,7 +248,9 @@ class ShardingStrategy:
         """
         tp_size = self.rank_info.tp_size
         if tp_size == 1:
-            sharding_dim = get_default_sharding_dim(parameter_name)
+            sharding_dim = self._maybe_adjust_sharding_dim(
+                parameter_name, get_default_sharding_dim(parameter_name)
+            )
             return ShardingType.NO_SHARDING, sharding_dim, 1
         if (
             "input_layernorm" in parameter_name
@@ -255,7 +275,9 @@ class ShardingStrategy:
             return self.get_mlp_sharding_strategy(parameter_name, **kwargs)
         if "attention" in parameter_name:
             return self.get_attention_sharding_strategy(parameter_name, **kwargs)
-        sharding_dim = get_default_sharding_dim(parameter_name)
+        sharding_dim = self._maybe_adjust_sharding_dim(
+            parameter_name, get_default_sharding_dim(parameter_name)
+        )
         return ShardingType.TP_SHARDING, sharding_dim, tp_size
 
 
@@ -264,6 +286,10 @@ def get_sharding_strategy_builder(engine_name: str):
         from awex.sharding.sglang_sharding import get_sglang_sharding_strategy
 
         return get_sglang_sharding_strategy
+    if engine_name == "vllm":
+        from awex.sharding.vllm_sharding import get_vllm_sharding_strategy
+
+        return get_vllm_sharding_strategy
     if engine_name == "mcore":
         from awex.sharding.mcore_sharding import get_mcore_sharding_strategy
 
@@ -276,6 +302,10 @@ def get_rank_info_extractor(engine_name: str):
         from awex.sharding.sglang_sharding import get_sglang_rank_info
 
         return get_sglang_rank_info
+    if engine_name == "vllm":
+        from awex.sharding.vllm_sharding import get_vllm_rank_info
+
+        return get_vllm_rank_info
     if engine_name == "mcore":
         from awex.sharding.mcore_sharding import get_mcore_rank_info
 

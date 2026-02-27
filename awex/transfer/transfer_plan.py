@@ -18,8 +18,9 @@
 import json
 import os
 import time
-from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from dataclasses import dataclass, field
+from hashlib import sha256
+from typing import Any, Dict, Iterable, List, Tuple
 
 import torch
 
@@ -29,7 +30,7 @@ from awex.meta.meta_resolver import (
     ParameterReplicaMeta,
     ParameterShardMeta,
 )
-from awex.util.common import to_dict
+from awex.util.common import _is_allowed_infer_only_alias, to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,12 @@ class CommunicationOperation:
     overlap_shape: Tuple[int, ...]
     train_slices: Tuple[slice, ...]
     inf_slices: Tuple[slice, ...]
+    # Destination PP stage index in infer topology.
+    pp_rank: int = 0
+    # Optional runtime placement version marker for debug/trace.
+    placement_version: int = -1
+    # Optional parameter class tag (attention/expert/dense_other).
+    param_class: str = "dense_other"
 
 
 @dataclass(slots=True)
@@ -59,8 +66,28 @@ class TransferPlan:
     - For inference ranks: maps training rank -> operations where this inference rank receives from that training rank
     """
 
-    # mapping from opposite rank to list of communication operations
-    operations: Dict[int, List[CommunicationOperation]]
+    # Backward-compatible alias to inter_operations. Existing callers use this.
+    operations: Dict[int, List[CommunicationOperation]] = field(default_factory=dict)
+    # Explicit inter transfer ops (train <-> infer).
+    inter_operations: Dict[int, List[CommunicationOperation]] = field(
+        default_factory=dict
+    )
+
+    def __post_init__(self):
+        # Compatibility bridge: accept old `operations` or new `inter_operations`.
+        if self.operations and not self.inter_operations:
+            self.inter_operations = self.operations
+        elif self.inter_operations and not self.operations:
+            self.operations = self.inter_operations
+        elif not self.operations and not self.inter_operations:
+            self.operations = {}
+            self.inter_operations = {}
+        elif self.operations != self.inter_operations:
+            logger.warning(
+                "TransferPlan initialized with both operations and inter_operations; "
+                "using inter_operations as source of truth."
+            )
+            self.operations = self.inter_operations
 
 
 @dataclass(slots=True)
@@ -80,6 +107,54 @@ class OverlapRegion:
     overlap_end: tuple
 
 
+@dataclass(slots=True)
+class NormalizedAxes:
+    """Unified rank-axis view used by planner logic."""
+
+    pp_rank: int
+    tp_rank: int
+    tp_size: int
+    ep_rank: int
+    ep_size: int
+    ep_tp_rank: int
+    ep_tp_size: int
+    attn_tp_rank: int
+    attn_tp_size: int
+
+
+def normalize_rank_axes(
+    param_class: str, rank_info: Any, shard_meta: Any = None
+) -> NormalizedAxes:
+    """Map rank axes to a single normalized view.
+
+    `param_class` can be one of: `attention`, `expert`, `dense_other`.
+    For attention we prioritize `attn_tp_*`; for expert we preserve both
+    `ep_*` and `ep_tp_*`; for dense we use generic `tp_*`.
+    """
+
+    def get(obj: Any, key: str, default: Any) -> Any:
+        return getattr(obj, key, default) if obj is not None else default
+
+    pp_rank = get(shard_meta, "pp_rank", get(rank_info, "pp_rank", 0))
+    if param_class == "attention":
+        tp_rank = get(rank_info, "attn_tp_rank", get(rank_info, "tp_rank", 0))
+        tp_size = get(rank_info, "attn_tp_size", get(rank_info, "tp_size", 1))
+    else:
+        tp_rank = get(rank_info, "tp_rank", 0)
+        tp_size = get(rank_info, "tp_size", 1)
+    return NormalizedAxes(
+        pp_rank=pp_rank,
+        tp_rank=tp_rank,
+        tp_size=tp_size,
+        ep_rank=get(rank_info, "ep_rank", 0),
+        ep_size=get(rank_info, "ep_size", 1),
+        ep_tp_rank=get(rank_info, "ep_tp_rank", 0),
+        ep_tp_size=get(rank_info, "ep_tp_size", 1),
+        attn_tp_rank=get(rank_info, "attn_tp_rank", tp_rank),
+        attn_tp_size=get(rank_info, "attn_tp_size", tp_size),
+    )
+
+
 class TransferPlanBuilder:
     def __init__(
         self,
@@ -87,6 +162,7 @@ class TransferPlanBuilder:
         train_world_size: int,
         num_infer_engines: int = 1,
         enable_debug_mode: bool = False,
+        strict_param_key_match: bool = False,
     ):
         if num_infer_engines <= 0:
             raise ValueError("num_infer_engines must be positive")
@@ -97,9 +173,11 @@ class TransferPlanBuilder:
         self.infer_instance_world_size = infer_world_size // num_infer_engines
         self.num_infer_engines = num_infer_engines
         self.enable_debug_mode = enable_debug_mode
+        self.strict_param_key_match = strict_param_key_match
         logger.info(
             f"TransferPlanBuilder: infer_world_size: {infer_world_size}, train_world_size: {train_world_size}, world_size: {self.world_size}, "
-            f"infer_instance_world_size: {self.infer_instance_world_size}, num_infer_engines: {num_infer_engines}, enable_debug_mode: {enable_debug_mode}"
+            f"infer_instance_world_size: {self.infer_instance_world_size}, num_infer_engines: {num_infer_engines}, "
+            f"enable_debug_mode: {enable_debug_mode}, strict_param_key_match: {strict_param_key_match}"
         )
 
     def build_weights_mapping_operations(
@@ -128,25 +206,48 @@ class TransferPlanBuilder:
         inference_meta_dict = {meta.name: meta for meta in inference_weights_meta}
         training_meta_dict = {meta.name: meta for meta in training_weights_meta}
 
-        # Get all parameter names that exist in both inference and training
-        common_params = set(inference_meta_dict.keys()) & set(training_meta_dict.keys())
-        if len(common_params) != len(inference_weights_meta) or len(
-            common_params
-        ) != len(training_weights_meta):
+        infer_keys = set(inference_meta_dict.keys())
+        train_keys = set(training_meta_dict.keys())
+        common_params = infer_keys & train_keys
+        missing_on_infer = train_keys - infer_keys
+        extra_on_infer = infer_keys - train_keys
+        unsupported_extra_on_infer = {
+            key
+            for key in extra_on_infer
+            if not _is_allowed_infer_only_alias(key, infer_keys, train_keys)
+        }
+        if self.strict_param_key_match:
+            key_mismatch = bool(missing_on_infer or extra_on_infer)
+        else:
+            # Two-stage contract: inter transfer requires train keys to exist
+            # in infer canonical-ingress metadata.
+            # Infer-only extras are allowed only for known alias coverage.
+            key_mismatch = bool(missing_on_infer or unsupported_extra_on_infer)
+        if key_mismatch:
             logger.error(
-                f"inference weights and training weights are not consistent: {len(inference_meta_dict)}, {len(training_meta_dict)}"
-            )
-            logger.error(
-                f"inference weights and training weights are not consistent, inference weights: {list(inference_meta_dict.keys())}"
-            )
-            logger.error(
-                f"inference weights and training weights are not consistent, training weights: {list(training_meta_dict.keys())}"
-            )
-            diff_params = set(inference_meta_dict.keys()) - set(
-                training_meta_dict.keys()
+                "Train/infer key mismatch for transfer plan: train=%s infer=%s "
+                "missing_on_infer=%s extra_on_infer=%s unsupported_extra_on_infer=%s strict=%s",
+                len(train_keys),
+                len(infer_keys),
+                sorted(missing_on_infer),
+                sorted(extra_on_infer),
+                sorted(unsupported_extra_on_infer),
+                self.strict_param_key_match,
             )
             raise ValueError(
-                f"inference weights and training weights are not consistent: {len(common_params)}, {len(inference_weights_meta)}, {len(training_weights_meta)}, {diff_params}"
+                "Train/infer key mismatch for transfer plan: "
+                f"train={len(train_keys)} infer={len(infer_keys)} "
+                f"missing_on_infer={sorted(missing_on_infer)} "
+                f"extra_on_infer={sorted(extra_on_infer)} "
+                f"unsupported_extra_on_infer={sorted(unsupported_extra_on_infer)} "
+                f"strict={self.strict_param_key_match}"
+            )
+        if extra_on_infer:
+            logger.info(
+                "Infer metadata has extra keys (ignored for inter plan in non-strict mode), "
+                "count=%s sample=%s",
+                len(extra_on_infer),
+                sorted(extra_on_infer)[:8],
             )
 
         communication_plan = []
@@ -583,7 +684,7 @@ class TransferPlanBuilder:
             logger.info(
                 f"Rank[{global_transfer_rank}] Saved communication plan to {os.path.abspath(file_name)}"
             )
-        return TransferPlan(operations=grouped_operations)
+        return TransferPlan(inter_operations=grouped_operations)
 
 
 @torch.no_grad()
@@ -622,3 +723,88 @@ def slice_tensor(
             )
             raise ValueError(msg)
     return sliced_tensor
+
+
+def compute_transfer_plan_hash(
+    transfer_plan: TransferPlan,
+) -> str:
+    """Create a deterministic hash for plan observability/debugging."""
+
+    def _slice_tuple(slices: Iterable[slice]) -> Tuple[Tuple[int, int, int], ...]:
+        return tuple((s.start, s.stop, s.step or 1) for s in slices)
+
+    payload = {"inter": []}
+    for peer_rank in sorted(transfer_plan.inter_operations.keys()):
+        for op in transfer_plan.inter_operations[peer_rank]:
+            payload["inter"].append(
+                (
+                    peer_rank,
+                    op.send_rank,
+                    op.recv_rank,
+                    op.send_shard_meta.name,
+                    op.recv_shard_meta.name,
+                    tuple(op.send_offset),
+                    tuple(op.recv_offset),
+                    tuple(op.overlap_shape),
+                    _slice_tuple(op.train_slices),
+                    _slice_tuple(op.inf_slices),
+                    op.pp_rank,
+                    op.placement_version,
+                    op.param_class,
+                )
+            )
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _shape_numel(shape: Iterable[int]) -> int:
+    numel = 1
+    for dim in shape:
+        numel *= int(dim)
+    return numel
+
+
+def _dtype_element_size(dtype: Any) -> int:
+    if isinstance(dtype, torch.dtype):
+        return torch.empty((), dtype=dtype).element_size()
+    if isinstance(dtype, str):
+        normalized = dtype.replace("torch.", "")
+        maybe_dtype = getattr(torch, normalized, None)
+        if isinstance(maybe_dtype, torch.dtype):
+            return torch.empty((), dtype=maybe_dtype).element_size()
+    # Keep a conservative default for unknown dtypes.
+    return 4
+
+
+def compute_transfer_plan_stats(
+    transfer_plan: TransferPlan,
+) -> Dict[str, Any]:
+    """Return structured observability stats for a transfer plan."""
+    inter_ops = 0
+    inter_numel = 0
+    inter_bytes = 0
+    for ops in transfer_plan.inter_operations.values():
+        inter_ops += len(ops)
+        for op in ops:
+            op_numel = _shape_numel(op.overlap_shape)
+            inter_numel += op_numel
+            inter_bytes += op_numel * _dtype_element_size(op.send_shard_meta.dtype)
+
+    total_ops = inter_ops
+    total_numel = inter_numel
+    total_bytes = inter_bytes
+    return {
+        "inter_hash": compute_transfer_plan_hash(transfer_plan),
+        "full_hash": compute_transfer_plan_hash(transfer_plan),
+        "inter": {
+            "peer_count": len(transfer_plan.inter_operations),
+            "op_count": inter_ops,
+            "numel": inter_numel,
+            "bytes": inter_bytes,
+        },
+        "total": {
+            "op_count": total_ops,
+            "numel": total_numel,
+            "bytes": total_bytes,
+        },
+    }

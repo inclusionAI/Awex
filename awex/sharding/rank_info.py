@@ -37,6 +37,9 @@ class RankInfo:
         local_rank (int): Local rank of the worker.
         engine_rank (int): Engine rank of the worker.
         is_infer (bool): Whether the worker is an inference worker.
+        cp_rank (int): Context parallel rank.
+        cp_size (int): Context parallel world size.
+        cp_mode (str): Context parallel mode label (e.g. none/ring/ulysses).
     """
 
     tp_rank: int
@@ -57,3 +60,6 @@ class RankInfo:
     local_rank: int
     engine_rank: int
     is_infer: bool
+    cp_rank: int = 0
+    cp_size: int = 1
+    cp_mode: str = "none"

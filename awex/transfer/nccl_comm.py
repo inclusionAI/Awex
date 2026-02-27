@@ -26,30 +26,25 @@ import torch.distributed as dist
 
 from awex import logging
 from awex.transfer.transfer_plan import slice_tensor
+from awex.util import device as device_util
 
 logger = logging.getLogger(__name__)
 
 
 NUM_COMM_STREAMS = 64
-_COMM_STREAMS_PER_DEVICE: Dict[int, List[torch.cuda.Stream]] = {}
+_COMM_STREAMS_PER_DEVICE: Dict[int, List[object]] = {}
 
 
-def _get_comm_streams() -> List[torch.cuda.Stream]:
-    """Get (and lazily create) CUDA streams for the current device.
-
-    We create a pool of NUM_COMM_STREAMS streams per CUDA device to allow
-    concurrent execution of P2P send/recv operations. If CUDA is not
-    available, an empty list is returned and the default stream is used.
-    """
-
-    if not torch.cuda.is_available():
+def _get_comm_streams() -> List[object]:
+    """Get (and lazily create) device streams for the current device."""
+    if device_util.get_device_type() not in {"cuda", "npu"}:
         return []
 
-    device_index = torch.cuda.current_device()
+    device_index = device_util.current_device()
     streams = _COMM_STREAMS_PER_DEVICE.get(device_index)
     if streams is None:
         streams = [
-            torch.cuda.Stream(device=device_index) for _ in range(NUM_COMM_STREAMS)
+            device_util.create_stream(device_index) for _ in range(NUM_COMM_STREAMS)
         ]
         _COMM_STREAMS_PER_DEVICE[device_index] = streams
     return streams
@@ -239,7 +234,7 @@ def execute_tensors_to_copy(tensors_to_copy, copy_ops, recv_parameters, stage: s
         recv_tensor_sliced = slice_tensor(recv_tensor, recv_op, False)
         recv_tensor_sliced.copy_(send_tensor)
     duration = time.time() - start_time
-    torch.cuda.synchronize(device=torch.cuda.current_device())
+    device_util.synchronize(device_id=device_util.current_device())
     logger.info(
         f"Finished executing {num_ops} copy operations for {stage}, took {duration:.4f} seconds"
     )
@@ -366,7 +361,7 @@ def execute_p2p_op_list(p2p_op_list, stage: str, weights_update_group):
             else:
                 raise ValueError(f"Unknown p2p op: {p2p_op.op}")
 
-        torch.cuda.synchronize()
+        device_util.synchronize()
         future.set_result(True)
         logger.info(
             f"[{os.getpid()}] All sync operations completed for {num_ops} operations for {stage}"
@@ -381,6 +376,7 @@ def execute_p2p_op_list(p2p_op_list, stage: str, weights_update_group):
 
 @torch.no_grad()
 def nccl_build_send_ops(parameters, transfer_plan, weights_update_group, copy_rank):
+    mem_debug = os.environ.get("AWEX_MEM_DEBUG", "0") == "1"
     send_progress = dict.fromkeys(transfer_plan.operations.keys(), 0)
     unfinished_ranks = set(transfer_plan.operations.keys())
     p2p_op_list = []
@@ -414,6 +410,28 @@ def nccl_build_send_ops(parameters, transfer_plan, weights_update_group, copy_ra
                 finished_ranks.add(recv_rank)
         for rank in finished_ranks:
             unfinished_ranks.remove(rank)
+    if mem_debug:
+        context_bytes = sum(
+            int(t.numel()) * int(t.element_size()) for t in train_slice_context.values()
+        )
+        unique_ptrs = {
+            int(op.tensor.data_ptr()) for op in p2p_op_list if op.tensor is not None
+        }
+        p2p_bytes = sum(
+            int(op.tensor.numel()) * int(op.tensor.element_size())
+            for op in p2p_op_list
+            if op.tensor is not None
+        )
+        logger.info(
+            "[nccl_build_send_ops][MEM] ops=%s copy_ops=%s unique_slices=%s "
+            "slice_cache_bytes=%s p2p_tensor_bytes=%s unique_tensor_ptrs=%s",
+            len(p2p_op_list),
+            len(copy_op_list),
+            len(train_slice_context),
+            context_bytes,
+            p2p_bytes,
+            len(unique_ptrs),
+        )
     return p2p_op_list, copy_op_list
 
 
@@ -541,7 +559,7 @@ def batch_send_recv(
             return works
         for work in works:
             work.wait()
-        torch.cuda.synchronize()
+        device_util.synchronize()
         return []
 
     # Manual execution path with explicit interleaving and CUDA streams.
@@ -568,8 +586,8 @@ def batch_send_recv(
             current_stream = streams[stream_idx]
 
         if use_stream and current_stream is not None:
-            # Execute on a dedicated CUDA stream for this peer.
-            with torch.cuda.stream(current_stream):
+            # Execute on a dedicated stream for this peer.
+            with device_util.stream(current_stream):
                 work = _run_p2p_op(op, not blocking)
         else:
             work = _run_p2p_op(op, not blocking)
@@ -581,5 +599,5 @@ def batch_send_recv(
         return works
 
     # For blocking mode, make sure all CUDA work is completed.
-    torch.cuda.synchronize()
+    device_util.synchronize()
     return []

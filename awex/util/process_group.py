@@ -21,6 +21,7 @@ import torch
 import torch.distributed as dist
 
 from awex import logging
+from awex.util import device as device_util
 
 logger = logging.getLogger(__name__)
 
@@ -206,11 +207,12 @@ def init_weights_update_group(
     )
     assert group_name != "", "Group name cannot be empty"
 
+    visible_env = device_util.visible_devices_env_value()
     logger.info(
         f"init custom process group for {role}: master_address={master_address}, master_port={master_port}, "
         f"rank={rank}, world_size={world_size}, group_name={group_name}, backend={backend}, "
-        f"current device id {torch.cuda.current_device()} "
-        f"CUDA_VISIBLE_DEVICES {os.environ.get('CUDA_VISIBLE_DEVICES')} "
+        f"current device id {device_util.current_device()} "
+        f"{'/'.join(device_util.visible_devices_env_names())} {visible_env or '(unset)'} "
         f"Local rank env {os.environ.get('LOCAL_RANK')} DEVICE env {os.environ.get('DEVICE')} "
         f"Global rank env {os.environ.get('RANK')}"
     )
@@ -241,38 +243,50 @@ def setup_batch_isend_irecv(
     dtype (torch.dtype): Data type of the tensor.
     """
     assert process_group is not None, "Process group cannot be None"
-    device = torch.cuda.current_device()
+    device = device_util.current_device()
     logger.info(
         f"Setup batch isend irecv for rank {rank} world size {world_size} device {device}"
     )
 
     # Create tensors for sending and receiving
+    torch_device = device_util.get_torch_device(device)
     send_tensor = torch.full(
-        (tensor_size,), rank, dtype=dtype, device=device, requires_grad=False
+        (tensor_size,), rank, dtype=dtype, device=torch_device, requires_grad=False
     )
     recv_tensor = torch.zeros(
-        (tensor_size,), dtype=dtype, device=device, requires_grad=False
+        (tensor_size,), dtype=dtype, device=torch_device, requires_grad=False
     )
 
     # Prepare the ops for batch_isend_irecv
     ops = []
 
-    # First half of ranks receive from rank + half
     mid_point = world_size // 2
-    if rank < mid_point:
-        # First half: receive from rank + half
-        target_rank = rank + mid_point
-        if target_rank < world_size:
-            ops.append(
-                dist.P2POp(dist.irecv, recv_tensor, target_rank, group=process_group)
-            )
+    if world_size <= 1:
+        logger.info(f"Skip batch isend/irecv setup because world size={world_size}.")
+    elif world_size % 2 == 0:
+        # Even world_size: pair the first half with the second half.
+        if rank < mid_point:
+            target_rank = rank + mid_point
+            if target_rank < world_size:
+                ops.append(
+                    dist.P2POp(
+                        dist.irecv, recv_tensor, target_rank, group=process_group
+                    )
+                )
+        else:
+            target_rank = rank - mid_point
+            if target_rank >= 0:
+                ops.append(
+                    dist.P2POp(
+                        dist.isend, send_tensor, target_rank, group=process_group
+                    )
+                )
     else:
-        # Second half: send to rank - half
-        target_rank = rank - mid_point
-        if target_rank >= 0:
-            ops.append(
-                dist.P2POp(dist.isend, send_tensor, target_rank, group=process_group)
-            )
+        # Odd world_size: use a simple ring so every rank has a partner.
+        recv_from = (rank - 1 + world_size) % world_size
+        send_to = (rank + 1) % world_size
+        ops.append(dist.P2POp(dist.irecv, recv_tensor, recv_from, group=process_group))
+        ops.append(dist.P2POp(dist.isend, send_tensor, send_to, group=process_group))
 
     # Execute batch_isend_irecv
     if ops:
@@ -282,18 +296,26 @@ def setup_batch_isend_irecv(
             req.wait()
 
     # Synchronize
-    torch.cuda.synchronize(device=torch.cuda.current_device())
-    dist.barrier(group=process_group, device_ids=[torch.cuda.current_device()])
+    device_util.synchronize(device_id=device_util.current_device())
+    dist.barrier(group=process_group, device_ids=[device_util.current_device()])
 
     logger.info(
         f"Simple communication completed for process group of size {world_size}"
     )
 
     # Verify the results
-    if rank < mid_point and rank + mid_point < world_size:
-        expected_value = rank + mid_point
+    if world_size <= 1:
+        return
+    if world_size % 2 == 0:
+        if rank < mid_point and rank + mid_point < world_size:
+            expected_value = rank + mid_point
+            assert torch.all(recv_tensor == expected_value), (
+                f"Rank {rank} received incorrect data from rank {rank + mid_point}"
+            )
+    else:
+        expected_value = (rank - 1 + world_size) % world_size
         assert torch.all(recv_tensor == expected_value), (
-            f"Rank {rank} received incorrect data from rank {rank + mid_point}"
+            f"Rank {rank} received incorrect data from rank {expected_value}"
         )
 
     logger.info("Simple communication verification successful")

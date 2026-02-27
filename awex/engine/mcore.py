@@ -19,11 +19,11 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
-import torch
 import torch.distributed as dist
 
 from awex import logging
 from awex.engine.core import TrainingEngine
+from awex.util import device as device_util
 from awex.writer.weights_writer import get_weights_exchange_writer
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ class MegatronEngine(TrainingEngine):
     def initialize(self) -> None:
         self.weights_exchange_writer = get_weights_exchange_writer(self)
         self.weights_exchange_writer.initialize()
-        device = torch.cuda.current_device()
+        device = device_util.current_device()
         logger.info(f"Finish initialize on device {device}")
         if self.enable_colocate_mode:
             # release memory for inference engine to initialize

@@ -426,6 +426,20 @@ class TestMetaServerClient:
         retrieved_list = client.get_object("list_key")
         assert retrieved_list == list_with_obj
 
+    def test_object_operations_with_slash_key(self, server_and_client):
+        client = server_and_client
+        key = "infer_runtime_placement/0/1"
+        value = {
+            "placement_version": 3,
+            "placement_map": {"expert_0": [(0, 0)]},
+        }
+        result = client.put_object(key, value)
+        assert result["success"] is True
+        assert client.has_key(key) is True
+        assert client.get_object(key) == value
+        client.delete(key)
+        assert client.has_key(key) is False
+
     def test_health_check(self, server_and_client):
         client = server_and_client
         health = client.health_check()

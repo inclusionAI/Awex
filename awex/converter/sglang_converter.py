@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
+import os
 from typing import List, Tuple
 
 import torch
@@ -39,6 +40,64 @@ class SGlangToHFWeightConverter:
         self.tp_rank = self.rank_info.tp_rank
         self.ep_size = infer_engine_config.ep_size
         self.ep_rank = self.rank_info.ep_rank
+        self.device_backend = self._resolve_device_backend(infer_engine_config)
+
+    @staticmethod
+    def _cfg_value(config, key: str, default=None):
+        if isinstance(config, dict):
+            return config.get(key, default)
+        return getattr(config, key, default)
+
+    def _resolve_device_backend(self, infer_engine_config) -> str:
+        backend = self._cfg_value(
+            infer_engine_config, "device_backend", None
+        ) or self._cfg_value(infer_engine_config, "device_type", None)
+        if isinstance(backend, str):
+            backend = backend.strip().lower()
+            if backend in {"cuda", "npu", "cpu"}:
+                return backend
+        # Some runtimes do not expose device_backend directly but do expose hccl.
+        comm_backend = self._cfg_value(infer_engine_config, "comm_backend", None)
+        if isinstance(comm_backend, str) and comm_backend.strip().lower() == "hccl":
+            return "npu"
+        env_backend = os.environ.get("AWEX_DEVICE_TYPE", "").strip().lower()
+        if env_backend in {"cuda", "npu", "cpu"}:
+            return env_backend
+        if os.environ.get("ASCEND_RT_VISIBLE_DEVICES"):
+            return "npu"
+        return "cuda"
+
+    def _use_transposed_moe_layout(self, name: str, parameter: torch.Tensor) -> bool:
+        if self.device_backend != "npu" or parameter.ndim != 2:
+            return False
+        # vLLM-ascend fused MoE kernels keep expert MLP weights in transposed layout.
+        return "experts" in name or "shared_experts" in name
+
+    def _split_gate_up(
+        self, name: str, parameter: torch.Tensor
+    ) -> List[Tuple[str, torch.Tensor]]:
+        if self._use_transposed_moe_layout(name, parameter):
+            # vLLM-ascend stores MoE fc1 in transposed layout [H, 2I].
+            # Build canonical views [2I, H] first so transfer/meta remain in
+            # canonical HF/Megatron orientation.
+            parameter = parameter.transpose(0, 1)
+        split_dim = 0
+        shape_split = parameter.shape[split_dim]
+        stride = shape_split // 2
+        return [
+            (
+                name.replace("gate_up_proj", "gate_proj").replace(
+                    "w13_weight", "gate_proj.weight"
+                ),
+                parameter.narrow(split_dim, 0, stride),
+            ),
+            (
+                name.replace("gate_up_proj", "up_proj").replace(
+                    "w13_weight", "up_proj.weight"
+                ),
+                parameter.narrow(split_dim, stride, stride),
+            ),
+        ]
 
     def _fuse_qkv(self, name: str) -> bool:
         """Override this method to control QKV fusion behavior"""
@@ -112,40 +171,26 @@ class SGlangToHFWeightConverter:
                 # Keep fused format
                 return [(name, parameter)]
             else:
-                # Split into separate gate and up projections
-                shape0 = parameter.shape[0]
-                stride = shape0 // 2
-                return [
-                    (
-                        name.replace("gate_up_proj", "gate_proj"),
-                        parameter.narrow(0, 0, stride),
-                    ),
-                    (
-                        name.replace("gate_up_proj", "up_proj"),
-                        parameter.narrow(0, stride, stride),
-                    ),
-                ]
+                # Split into separate gate and up projections.
+                # On vLLM-ascend MoE, gate_up tensors are transposed and must be split on dim=1.
+                return self._split_gate_up(name, parameter)
         elif "down_proj" in name:
+            if self._use_transposed_moe_layout(name, parameter):
+                # vLLM-ascend stores MoE fc2 in transposed layout [I, H].
+                # Expose canonical view [H, I].
+                parameter = parameter.transpose(0, 1)
             return [(name, parameter)]
         elif "w13_weight" in name:
             # Handle MoE expert weights (w13_weight contains both gate and up projections)
             if self._fuse_gate_up_proj(name):
                 return [(name.replace("w13_weight", "gate_up_proj.weight"), parameter)]
             else:
-                shape0 = parameter.shape[0]
-                stride = shape0 // 2
-                return [
-                    (
-                        name.replace("w13_weight", "gate_proj.weight"),
-                        parameter.narrow(0, 0, stride),
-                    ),
-                    (
-                        name.replace("w13_weight", "up_proj.weight"),
-                        parameter.narrow(0, stride, stride),
-                    ),
-                ]
+                # On vLLM-ascend MoE, w13 tensors are transposed and must be split on dim=1.
+                return self._split_gate_up(name, parameter)
         elif "w2_weight" in name:
             # Handle MoE expert down projection
+            if self._use_transposed_moe_layout(name, parameter):
+                parameter = parameter.transpose(0, 1)
             return [(name.replace("w2_weight", "down_proj.weight"), parameter)]
         else:
             raise NotImplementedError(f"Unsupported MLP parameter name: {name}")
@@ -210,6 +255,18 @@ class SGlangToHFWeightConverter:
             return [(name, parameter)]
         converted_params = []
         num_local_experts = parameter.shape[0]
+
+        def _attach_expert_id(base_name: str, expert_id: int) -> str:
+            # Normalized expert names from _convert_mlp_param are typically either:
+            #   - mlp.experts.<proj>.weight
+            #   - mlp.<proj>.weight
+            # Attach local expert id exactly once.
+            if base_name.startswith("mlp.experts."):
+                return base_name.replace("mlp.experts.", f"mlp.experts.{expert_id}.", 1)
+            if base_name.startswith("mlp."):
+                return base_name.replace("mlp.", f"mlp.experts.{expert_id}.", 1)
+            return f"mlp.experts.{expert_id}.{base_name}"
+
         for i in range(num_local_experts):
             expert_id = i + self.ep_rank * num_local_experts
             expert_parameter = parameter[i]
@@ -220,18 +277,14 @@ class SGlangToHFWeightConverter:
                     # mlp.experts.63.gate_up_proj.weight
                     # mlp.experts.63.gate_proj.weight
                     # mlp.experts.63.up_proj.weight
-                    updated_name = converted_name.replace(
-                        "mlp.", f"mlp.experts.{expert_id}."
-                    )
+                    updated_name = _attach_expert_id(converted_name, expert_id)
                     converted_params.append((updated_name, param))
             elif "w2_weight" in name:
                 for converted_name, param in self._convert_mlp_param(
                     name, expert_parameter, layer_number
                 ):
                     # mlp.experts.63.down_proj.weight
-                    updated_name = converted_name.replace(
-                        "mlp.", f"mlp.experts.{expert_id}."
-                    )
+                    updated_name = _attach_expert_id(converted_name, expert_id)
                     converted_params.append((updated_name, param))
             else:
                 raise NotImplementedError(f"Unsupported expert parameter name: {name}")

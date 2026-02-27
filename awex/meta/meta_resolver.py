@@ -94,6 +94,14 @@ class ParamMetaResolver(ABC):
                 sharding_type, sharding_dim, num_shards = self._get_sharding_info(
                     name, rank_info, param_meta
                 )
+                dtype = param_meta["dtype"]
+                if isinstance(dtype, str):
+                    try:
+                        import torch
+
+                        dtype = getattr(torch, dtype)
+                    except Exception:
+                        pass
                 shard_info = ParameterShardMeta(
                     name=name,
                     tp_rank=rank_info.tp_rank,
@@ -106,7 +114,7 @@ class ParamMetaResolver(ABC):
                     world_size=rank_info.world_size,
                     shape=param_meta["shape"],
                     numel=param_meta["numel"],
-                    dtype=param_meta["dtype"],
+                    dtype=dtype,
                     sharding_type=sharding_type,
                     num_shards=num_shards,
                     sharding_dim=sharding_dim,

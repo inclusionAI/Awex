@@ -1,4 +1,5 @@
 import json
+import os
 from unittest.mock import MagicMock
 
 import pytest
@@ -9,6 +10,7 @@ from awex.meta.meta_resolver import (
     ParameterMeta,
     ParameterReplicaMeta,
     ParameterShardMeta,
+    ParamMetaResolver,
     ShardingType,
 )
 from awex.sharding.param_sharding import RankInfo
@@ -21,6 +23,11 @@ MODEL_ARCH_NAME = "Qwen2ForCausalLM"
 # ----------------------
 # HELPER FUNCTIONS
 # ----------------------
+
+
+def _require_heavy_env() -> None:
+    if os.environ.get("AWEX_RUN_HEAVY_TESTS") != "1":
+        pytest.skip("Set AWEX_RUN_HEAVY_TESTS=1 to run heavy GPU integration tests.")
 
 
 def make_param_meta(name, shape, dtype=torch.float32):
@@ -239,6 +246,55 @@ def create_real_engine_config(model_path, tp_size=1, pp_size=1, dp_size=1):
 # ----------------------
 # 1. MOCKED ENGINE TESTS
 # ----------------------
+
+
+def test_select_canonical_rank0_meta_with_duplicate_rank0_entries():
+    # Simulate aggregated DP-core metadata where both cores accidentally expose
+    # global_rank=0. Resolver should not crash and should select a deterministic
+    # canonical entry.
+    rank0_dp0 = {
+        "rank_info": make_rank_info(
+            tp_rank=0,
+            tp_size=1,
+            dp_size=2,
+            attn_tp_rank=0,
+            attn_tp_size=1,
+            attn_dp_rank=0,
+            world_size=2,
+            global_rank=0,
+            local_rank=0,
+            engine_rank=0,
+            is_infer=True,
+        ),
+        "params_meta": [make_param_meta("a.weight", (2, 2))],
+        "model_arch_name": MODEL_ARCH_NAME,
+    }
+    rank0_dp1 = {
+        "rank_info": make_rank_info(
+            tp_rank=0,
+            tp_size=1,
+            dp_size=2,
+            attn_tp_rank=0,
+            attn_tp_size=1,
+            attn_dp_rank=0,
+            world_size=2,
+            global_rank=0,
+            local_rank=1,
+            engine_rank=0,
+            is_infer=True,
+        ),
+        "params_meta": [make_param_meta("a.weight", (2, 2))],
+        "model_arch_name": MODEL_ARCH_NAME,
+    }
+    # force dp_rank difference to simulate two DP cores
+    rank0_dp0["rank_info"].dp_rank = 0
+    rank0_dp1["rank_info"].dp_rank = 1
+
+    chosen = InferParamMetaResolver._select_canonical_rank0_meta([rank0_dp1, rank0_dp0])
+    assert chosen["rank_info"].dp_rank == 0
+    assert chosen["rank_info"].global_rank == 0
+
+
 @pytest.mark.parametrize(
     "sharding_case,param_defs,ranks,expected",
     [
@@ -589,11 +645,68 @@ def test_dp_tp_sharding_offsets():
     assert replica1_tp_ranks == {0, 1}
 
 
+def test_build_params_meta_cp_fields_use_defaults():
+    class _DummyResolver(ParamMetaResolver):
+        def __init__(self):
+            mock_hf_config = MagicMock()
+            mock_hf_config.num_hidden_layers = 1
+            super().__init__(mock_hf_config)
+
+        def get_model_arch_name(self) -> str:
+            return "Dummy"
+
+        def get_parameters_meta(self):
+            return self._build_params_meta()
+
+        def _get_params_raw_meta(self):
+            rank_info = MagicMock()
+            rank_info.tp_rank = 0
+            rank_info.attn_tp_rank = 0
+            rank_info.pp_rank = 0
+            rank_info.ep_rank = 0
+            rank_info.ep_tp_rank = 0
+            rank_info.global_rank = 0
+            rank_info.engine_rank = 0
+            rank_info.world_size = 1
+            rank_info.cp_rank = 1
+            rank_info.cp_size = 2
+            rank_info.cp_mode = "ulysses"
+            return [
+                {
+                    "rank_info": rank_info,
+                    "params_meta": [
+                        {
+                            "name": "model.layers.0.attention.q_proj.weight",
+                            "numel": 8,
+                            "shape": (2, 4),
+                            "dtype": torch.float32,
+                        }
+                    ],
+                    "model_arch_name": "Dummy",
+                }
+            ]
+
+        def _get_sharding_info(self, name, rank_info, param_meta):
+            return ShardingType.NO_SHARDING, 0, 1
+
+    resolver = _DummyResolver()
+    params = resolver.get_parameters_meta()
+    assert len(params) == 1
+    shard = params[0].shards[0]
+    assert shard.cp_rank == 0
+    assert shard.cp_size == 1
+    assert shard.cp_mode == "none"
+
+
 @pytest.mark.skipif(
-    not torch.cuda.is_available(),
-    reason="CUDA is required for real engine test.",
+    not (
+        torch.cuda.is_available()
+        or (getattr(torch, "npu", None) and torch.npu.is_available())
+    ),
+    reason="CUDA/NPU is required for real engine test.",
 )
 def test_meta_resolver_with_real_engine():
+    _require_heavy_env()
     # Check if model exists locally or can be downloaded
     model_path = "Qwen/Qwen2-1.5B"
     config = create_real_engine_config(model_path)
@@ -639,10 +752,14 @@ def test_meta_resolver_with_real_engine():
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available(),
-    reason="CUDA are required for lite meta resolver test.",
+    not (
+        torch.cuda.is_available()
+        or (getattr(torch, "npu", None) and torch.npu.is_available())
+    ),
+    reason="CUDA/NPU is required for lite meta resolver test.",
 )
 def test_meta_resolver_lite():
+    _require_heavy_env()
     model_path = "Qwen/Qwen2-1.5B"
     # Meta server startup can fail on constrained environments; treat
     # that as a skip rather than a hard failure so tests remain

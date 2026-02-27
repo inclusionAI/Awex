@@ -79,6 +79,11 @@ class InferParamMetaResolver(ParamMetaResolver):
             engine_rank=engine_rank,
             convert_params=self.convert_params,
         )
+        # vLLM IPC serializes RankInfo to dict; restore for internal usage.
+        for info in self._params_raw_meta:
+            rank_info = info.get("rank_info")
+            if isinstance(rank_info, dict):
+                info["rank_info"] = RankInfo(**rank_info)
         if self._inference_engine.config.enable_debug_mode:
             filename = f"infer_params_raw_meta_{suffix}"
             abs_filename = os.path.abspath(filename)
@@ -87,13 +92,7 @@ class InferParamMetaResolver(ParamMetaResolver):
             logger.info(
                 f"Inference rank {engine_rank}, params_raw_meta: {abs_filename}"
             )
-        rank0_params = [
-            info for info in self._params_raw_meta if info["rank_info"].global_rank == 0
-        ]
-        if len(rank0_params) != 1:
-            logger.error(f"Expected 1 rank0 meta, got {rank0_params}")
-            raise ValueError(f"Expected 1 rank0 meta, got {len(rank0_params)}")
-        [self._rank0_meta] = rank0_params
+        self._rank0_meta = self._select_canonical_rank0_meta(self._params_raw_meta)
         self.rank0_info = self._rank0_meta["rank_info"]
         self._world_size = self.rank0_info.world_size
         self._model_arch_name = self._rank0_meta["model_arch_name"]
@@ -126,6 +125,59 @@ class InferParamMetaResolver(ParamMetaResolver):
 
     def _get_params_raw_meta(self) -> List[Dict[str, Any]]:
         return self._params_raw_meta
+
+    @staticmethod
+    def _meta_identity_key(info: Dict[str, Any]):
+        rank_info = info["rank_info"]
+        return (
+            rank_info.global_rank,
+            rank_info.dp_rank,
+            rank_info.tp_rank,
+            rank_info.pp_rank,
+            rank_info.ep_rank,
+            rank_info.attn_tp_rank,
+            rank_info.attn_dp_rank,
+        )
+
+    @classmethod
+    def _select_canonical_rank0_meta(
+        cls, params_raw_meta: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        if not params_raw_meta:
+            raise ValueError("No inference parameter metadata collected.")
+
+        rank0_params = [
+            info for info in params_raw_meta if info["rank_info"].global_rank == 0
+        ]
+        if rank0_params:
+            by_identity = {}
+            for info in rank0_params:
+                by_identity[cls._meta_identity_key(info)] = info
+            dedup_rank0 = list(by_identity.values())
+            if len(dedup_rank0) > 1:
+                logger.warning(
+                    "Found %s rank0 metas (dedup=%s); selecting canonical by "
+                    "(dp,tp,pp,ep,attn_tp,attn_dp).",
+                    len(rank0_params),
+                    len(dedup_rank0),
+                )
+            dedup_rank0.sort(
+                key=lambda info: (
+                    info["rank_info"].dp_rank,
+                    info["rank_info"].tp_rank,
+                    info["rank_info"].pp_rank,
+                    info["rank_info"].ep_rank,
+                    info["rank_info"].attn_tp_rank,
+                    info["rank_info"].attn_dp_rank,
+                )
+            )
+            return dedup_rank0[0]
+
+        # Fallback: if no global_rank==0 exists (unexpected), use minimum identity.
+        logger.warning(
+            "No global_rank==0 meta found; falling back to minimum rank identity."
+        )
+        return min(params_raw_meta, key=cls._meta_identity_key)
 
     def _get_sharding_info(
         self, name: str, rank_info: RankInfo, param_meta: Dict[str, Any]
@@ -171,18 +223,81 @@ class InferParamMetaResolver(ParamMetaResolver):
                     params.append((hf_name, hf_param))
             else:
                 params.append((name, param))
+        if convert_params and engine_name == "vllm":
+            hf_config = getattr(model, "config", None) or getattr(
+                model_context, "hf_config", None
+            )
+            if getattr(hf_config, "tie_word_embeddings", False):
+                pp_rank = model_context.get("pp_rank", 0)
+                pp_size = model_context.get("pp_size", 1)
+                names = {n for n, _ in params}
+                if (
+                    pp_rank == pp_size - 1
+                    and "lm_head.weight" not in names
+                    and "model.embed_tokens.weight" in names
+                ):
+                    embed_tensor = None
+                    for n, p in params:
+                        if n == "model.embed_tokens.weight":
+                            embed_tensor = p
+                            break
+                    if embed_tensor is not None:
+                        # vLLM ties output weights to embeddings, but does not expose lm_head.
+                        params.append(("lm_head.weight", embed_tensor))
+                        logger.info(
+                            "Infer meta: added lm_head.weight alias for tied embeddings in vLLM"
+                        )
+        if os.environ.get("AWEX_DEBUG_INFER_META", "0") == "1":
+            names = [n for n, _ in params]
+            has_lm_head = any(
+                n.endswith("lm_head.weight")
+                or n.endswith("lm_head")
+                or n.endswith("model.lm_head.weight")
+                for n in names
+            )
+            has_embed = any(
+                n.endswith("embed_tokens.weight")
+                or n.endswith("model.embed_tokens.weight")
+                for n in names
+            )
+            logger.info(
+                "Infer meta debug: engine=%s engine_rank=%s pp_rank=%s/%s tp_rank=%s "
+                "convert_params=%s has_lm_head=%s has_embed=%s total_params=%s",
+                engine_name,
+                engine_rank,
+                model_context.get("pp_rank"),
+                model_context.get("pp_size"),
+                model_context.get("tp_rank"),
+                convert_params,
+                has_lm_head,
+                has_embed,
+                len(names),
+            )
+        non_contiguous = []
         for name, param in params:
             if not param.is_contiguous():
-                logger.info(
-                    f"Parameter {name} is not contiguous, shape: {param.shape}, "
-                    f"rank: {rank_info.global_rank}"
-                )
+                non_contiguous.append((name, tuple(param.shape)))
+            dtype_str = str(param.dtype).replace("torch.", "")
             params_meta.append(
                 {
                     "name": name,
                     "numel": param.numel(),
                     "shape": tuple(param.shape),
-                    "dtype": param.dtype,
+                    "dtype": dtype_str,
                 }
             )
+        if non_contiguous:
+            sample = ", ".join(f"{name}:{shape}" for name, shape in non_contiguous[:8])
+            logger.info(
+                "Infer meta rank %s has %s non-contiguous params (showing up to 8): %s",
+                rank_info.global_rank,
+                len(non_contiguous),
+                sample,
+            )
+            if len(non_contiguous) > 8:
+                logger.debug(
+                    "Infer meta rank %s remaining non-contiguous params: %s",
+                    rank_info.global_rank,
+                    [name for name, _ in non_contiguous[8:]],
+                )
         return meta

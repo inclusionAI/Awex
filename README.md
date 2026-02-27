@@ -133,6 +133,162 @@ reader.initialize()
 reader.update_weights(step_id=1)
 ```
 
+## Weight Conversion Tests
+
+These scripts compare weight formats across Megatron, vLLM, and SGLang by
+converting all parameters into HF-style names and then diffing tensors.
+
+**Intended use** (for new model bring‑up):
+- These scripts primarily validate Awex converter coverage. They help answer:
+  “Does the current converter support this new model, or do we need mapping fixes?”
+- If your target stack is **Megatron → vLLM**, usually running
+  `verify_weight_conversion.py` + `compare_megatron_vllm_weights.py` is sufficient.
+- Use `compare_vllm_sglang_weights.py` only if you also care about **vLLM ↔ SGLang**
+  parity (or you’re adding SGLang support for a new model).
+
+**GPU/NPU notes**
+- All compare/verify scripts accept `--device-backend` (auto/cuda/npu/cpu), but
+  they are **CUDA-only today** because vLLM/SGLang backends require CUDA.
+  Use `--device-backend cuda` explicitly if auto-detection picks the wrong device.
+- For NPU, use these scripts on CUDA to validate **converter coverage**, then
+  validate the **runtime weight update** path on NPU with the integration tests.
+
+### Naming normalization (why `self_attn.qkv_proj` becomes `attention.query_key_value_proj`)
+Awex normalizes parameter names from different backends into a single canonical
+HF-style naming scheme so Megatron, vLLM, and SGLang can be compared directly.
+There are three “namespaces” involved:
+
+1) **Megatron (mcore) names** – e.g. `decoder.layers.0.self_attention.linear_qkv.weight`  
+2) **vLLM/SGLang names** – e.g. `model.layers.0.self_attn.qkv_proj.weight`  
+3) **Awex canonical HF-style names** – e.g. `model.layers.0.attention.query_key_value_proj.weight`
+
+Example for **QKV** conversion:
+- Megatron `self_attention.linear_qkv.weight`  
+  → (mcore converter) `self_attn.qkv_proj.weight`  
+  → (normalize) `attention.query_key_value_proj.weight`
+- vLLM `self_attn.qkv_proj.weight`  
+  → (normalize) `attention.query_key_value_proj.weight`
+
+So `self_attn.qkv_proj` is **not** the canonical HF name; it is a vLLM name (and
+also an intermediate name in the Megatron converter). The canonical name used
+for comparison is `attention.query_key_value_proj`.
+
+**Qwen3 note:** HF checkpoints store unfused `q_proj/k_proj/v_proj` weights. The
+verifier treats those as valid matches for the canonical `query_key_value_proj`.
+
+- Compare vLLM vs SGLang HF-loaded weights:
+  - Script: `awex/tests/experimental/compare_vllm_sglang_weights.py`
+  - Example:
+    ```bash
+    python awex/tests/experimental/compare_vllm_sglang_weights.py \
+      --model-path /path/to/hf/model \
+      --out-dir /tmp/vllm_sglang_compare \
+      --device-backend cuda \
+      --trust-remote-code \
+      --max-layers 4 \
+      --include-non-layer
+    ```
+- Compare Megatron vs vLLM (via converters to HF naming):
+  - Script: `awex/tests/experimental/compare_megatron_vllm_weights.py`
+  - Note: We default to mbridge for all models. Use `--no-mbridge` to force the
+    Megatron convert.py path (Qwen3 will still fall back to mbridge).
+  - Example:
+    ```bash
+    python awex/tests/experimental/compare_megatron_vllm_weights.py \
+      --model-path /path/to/hf/model \
+      --out-dir /tmp/megatron_vllm_compare \
+      --device-backend cuda \
+      --trust-remote-code \
+      --max-layers 4 \
+      --include-non-layer
+    ```
+  - Multi-GPU (torchrun) variant:
+    - Script: `awex/tests/experimental/compare_megatron_vllm_weights_multi.py`
+    - Example:
+      ```bash
+      torchrun --nproc_per_node=2 awex/tests/experimental/compare_megatron_vllm_weights_multi.py \
+        --stage megatron_dump \
+        --model-path /path/to/hf/model \
+        --out-dir /tmp/megatron_vllm_compare \
+        --device-backend cuda \
+        --train-tp-size 2 \
+        --train-pp-size 1 \
+        --train-ep-size 1 \
+        --train-cuda-devices 0,1
+      python awex/tests/experimental/compare_megatron_vllm_weights_multi.py \
+        --stage vllm_compare \
+        --model-path /path/to/hf/model \
+        --out-dir /tmp/megatron_vllm_compare
+      ```
+
+Both scripts produce a JSON report with missing keys, shape/dtype mismatches,
+and value diffs. You can limit comparison to the first N layers with
+`--max-layers N`. For large models, expect heavy disk usage because each tensor
+is saved to disk for comparison.
+
+- Verify HF weight conversion coverage:
+  - Script: `awex/tests/experimental/verify_weight_conversion.py`
+  - Note: Qwen3 HF checkpoints store unfused q/k/v (and o_proj) weights, so the
+    verifier treats those as valid matches for vLLM qkv/o_proj names.
+  - Example:
+    ```bash
+    python awex/tests/experimental/verify_weight_conversion.py \
+      --model-path /path/to/hf/model \
+      --device-backend cuda
+    ```
+
+## Integration Tests (Awex ↔ vLLM)
+
+- Megatron → vLLM weight exchange (requires 2 GPUs and Awex vLLM plugin):
+  - Script: `awex/tests/weights_exchange_vllm_it.py`
+  - Example:
+    ```bash
+    CUDA_VISIBLE_DEVICES=0,1 python awex/tests/weights_exchange_vllm_it.py \
+      --comm_backend nccl \
+      --model-path /path/to/hf/model \
+      --device-backend cuda \
+      --validate
+    ```
+  - Optional: add `--validate` to run a consistency check and print
+    "weights are consistent" logs (supported for NCCL or file backend).
+  - `--model-path` defaults to `vllm_inference_config["model_path"]` inside the
+    script. Set it explicitly for your local model directory.
+  - NPU (experimental, requires vllm-ascend + MindSpeed + Megatron):
+    ```bash
+    ASCEND_RT_VISIBLE_DEVICES=0,1 AWEX_USE_MINDSPEED=1 \
+      python awex/tests/weights_exchange_vllm_it.py \
+      --comm_backend hccl \
+      --device-backend npu
+    ```
+  - Multi-process (`torchrun`) integration is currently excluded because startup
+    is not stable in our test environment. Use the single-process script above
+    as the baseline validation path.
+
+## NPU / MindSpeed Notes (Experimental)
+
+Awex includes **experimental** NPU support for the weight-exchange runtime path
+(training ↔ inference). This path is intended for **MindSpeed + Megatron** on
+Ascend and **vllm-ascend** on the inference side.
+
+- **Device backend**: set `AWEX_DEVICE_TYPE=npu` to switch the internal device
+  helpers to NPU semantics. For communication, use `comm_backend=hccl` and
+  `weights_exchange_ipc_backend=cpu` (CUDA IPC is not supported on NPU).
+- **MindSpeed patching**: set `AWEX_USE_MINDSPEED=1` **before** importing
+  `megatron` / `megatron.core` so MindSpeed can patch Megatron internals.
+- **Inference**: requires `vllm-ascend` with the Awex plugin enabled. This
+  integration has been validated in our environment.
+- **Memory debug logging**: set `AWEX_MEM_DEBUG=1` to emit additional memory
+  diagnostics during weight conversion and NCCL send-op construction. This is
+  intended for debugging memory pressure or unexpected tensor retention and
+  should remain disabled in normal runs.
+
+**What is NOT NPU-ready yet**
+- `compare_megatron_vllm_weights.py`, `verify_weight_conversion.py`, and
+  `compare_vllm_sglang_weights.py` are **CUDA-only** (they rely on vLLM CUDA
+  kernels and torch.cuda).
+- If you target NPU, use these scripts on CUDA to validate **converter
+  coverage**, then validate the **runtime weight update** path on NPU.
+
 ## 🤝 Contributing
 
 Awex is an open-source project. We welcome all forms of contributions:
@@ -159,6 +315,9 @@ pytest -v -s .
 
 # Run specific test
 pytest -v -s awex/tests/test_meta_resolver.py
+
+# Run heavy GPU integration tests (requires Megatron-LM and 2 GPUs)
+CUDA_VISIBLE_DEVICES=0,1 pytest -v -s awex/tests/test_weights_writer.py
 
 # Format code
 ruff format .

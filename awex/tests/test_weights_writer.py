@@ -32,6 +32,7 @@ from awex.meta.meta_server import MetaServerClient, start_meta_server
 from awex.tests.test_utils import megatron_model_from_hf
 from awex.transfer.nccl_comm import batch_send_recv, nccl_build_recv_ops
 from awex.transfer.transfer_plan import TransferPlanBuilder
+from awex.util import device as device_util
 from awex.util.common import get_free_port, simple_hf_config
 from awex.util.process_group import (
     init_weights_update_group,
@@ -49,19 +50,20 @@ def create_mocked_mcore_engine():
     os.environ["NCCL_MAX_NCHANNELS"] = "8"
     os.environ["NCCL_DEBUG_SUBSYS"] = "INIT,ALLOC"
     os.environ["GLOO_USE_LIBUV"] = "0"
-    os.environ["GLOO_SOCKET_IFNAME"] = "eth0"
-    os.environ["NCCL_SOCKET_IFNAME"] = "eth0"
-    # Training rank uses GPU 1 (logical device index 1 in this process)
+    os.environ.setdefault("GLOO_SOCKET_IFNAME", "lo")
+    os.environ.setdefault("NCCL_SOCKET_IFNAME", "lo")
+    # Training rank uses device 1 (logical device index 1 in this process)
     os.environ["LOCAL_RANK"] = "1"
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+    visible_env = device_util.visible_devices_env_names()[0]
+    os.environ[visible_env] = "0,1"
     os.environ["DEVICE"] = "1"
-    # Ensure current CUDA device matches DEVICE before Megatron init so
-    # that Megatron constructs its model directly on GPU 1.
-    torch.cuda.set_device(int(os.environ["DEVICE"]))
+    # Ensure current device matches DEVICE before Megatron init so
+    # that Megatron constructs its model directly on device 1.
+    device_util.set_device(int(os.environ["DEVICE"]))
     ip, port = start_meta_server()
     config = {
         "meta_server_addr": f"{ip}:{port}",
-        "comm_backend": "nccl",
+        "comm_backend": "hccl" if device_util.get_device_type() == "npu" else "nccl",
         "enable_debug_mode": True,
     }
     from awex.engine.mcore import MegatronEngine
@@ -71,8 +73,8 @@ def create_mocked_mcore_engine():
 
 
 @pytest.mark.skipif(
-    torch.cuda.device_count() <= 1,
-    reason="Only one GPU present",
+    device_util.device_count() <= 1,
+    reason="Only one device present",
 )
 def test_weights_writer():
     # Create Megatron engine first so that Megatron can initialize its
@@ -80,19 +82,22 @@ def test_weights_writer():
     # pre-existing default torch process group.
     mcore_engine = create_mocked_mcore_engine()
     # Initialize process group for the writer side on GPU 1
-    torch.cuda.set_device(1)
+    device_util.set_device(1)
     os.environ["RANK"] = "0"
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+    visible_env = device_util.visible_devices_env_names()[0]
+    os.environ[visible_env] = "0,1"
     os.environ["DEVICE"] = "1"
     os.environ["LOCAL_RANK"] = "1"
-    init_process_group(0, 1, get_free_port())
+    if not dist.is_initialized():
+        init_process_group(0, 1, get_free_port())
     # Initialize Megatron parallel state
     from megatron.core import parallel_state as mpu
 
-    mpu.initialize_model_parallel(
-        tensor_model_parallel_size=1,
-        pipeline_model_parallel_size=1,
-    )
+    if not mpu.model_parallel_is_initialized():
+        mpu.initialize_model_parallel(
+            tensor_model_parallel_size=1,
+            pipeline_model_parallel_size=1,
+        )
 
     mcore_engine.initialize()
     weights_writer = mcore_engine.weights_exchange_writer
@@ -167,14 +172,17 @@ def test_weights_writer():
     os.environ.update(_env_backup)
 
 
-def init_process_group(rank, world_size, port):
+def init_process_group(rank, world_size, port, backend_override: str | None = None):
     """Initialize the default torch process group."""
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = str(port)
     os.environ["RANK"] = str(rank)
     os.environ["WORLD_SIZE"] = str(world_size)
 
-    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
+    backend = backend_override or (
+        "hccl" if device_util.get_device_type() == "npu" else "nccl"
+    )
+    dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
 
 
 def weights_reader(meta_server_addr):
@@ -194,9 +202,10 @@ def weights_reader(meta_server_addr):
 
     os.environ["LOCAL_RANK"] = "0"
     os.environ["DEVICE"] = "0"
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
-    torch.cuda.set_device(0)
-    init_process_group(0, 1, get_free_port())
+    visible_env = device_util.visible_devices_env_names()[0]
+    os.environ[visible_env] = "0,1"
+    device_util.set_device(0)
+    init_process_group(0, 1, get_free_port(), backend_override="gloo")
     os.environ.pop("MASTER_ADDR")
     os.environ.pop("MASTER_PORT")
     os.environ.pop("RANK")
@@ -252,9 +261,13 @@ def weights_reader(meta_server_addr):
         group_name="weights_exchange",
         role="inference",
     )
-    dist.barrier(group=weights_update_group, device_ids=[torch.cuda.current_device()])
+    dist.barrier(group=weights_update_group, device_ids=[device_util.current_device()])
     logger.info("Start to test NCCL ready for rank")
-    dist.recv(torch.tensor(1).cuda(), src=1, group=weights_update_group)
+    dist.recv(
+        torch.tensor(1, device=device_util.get_torch_device()),
+        src=1,
+        group=weights_update_group,
+    )
     logger.info("NCCL ready: recv tensor from rank 1")
     logger.info("Start to receive weights")
     logger.info(f"Recv ranks: {transfer_plan.operations.keys()}")
@@ -272,7 +285,11 @@ def weights_reader(meta_server_addr):
 
     # Parameters are keyed by their shard name to mirror how the writer passes tensors.
     parameters = {}
-    logger.info(f"Create tensors at device cuda:{torch.cuda.current_device()}")
+    logger.info(
+        "Create tensors at device %s:%s",
+        device_util.get_device_type(),
+        device_util.current_device(),
+    )
     for _rank, operations in transfer_plan.operations.items():
         for operation in operations:
             param_name = operation.recv_shard_meta.name
@@ -280,11 +297,11 @@ def weights_reader(meta_server_addr):
                 continue
             tensor = torch.ones(
                 operation.recv_shard_meta.shape,
-                device=f"cuda:{torch.cuda.current_device()}",
+                device=device_util.get_torch_device(),
                 dtype=operation.recv_shard_meta.dtype,
             )
             parameters[param_name] = tensor
-    torch.cuda.synchronize(device=torch.cuda.current_device())
+    device_util.synchronize(device_util.current_device())
 
     # Build recv operations in round-robin order to match the sender's round-robin pattern
     # The sender uses nccl_build_send_ops which interleaves operations across ranks
@@ -313,14 +330,14 @@ def weights_reader(meta_server_addr):
     logger.info(f"Test reader: Executing {len(p2p_ops)} recv ops via batch_send_recv")
     batch_send_recv(send_ops=[], recv_ops=p2p_ops, blocking=True, use_group=True)
     logger.info("All recv operations completed, synchronizing CUDA")
-    torch.cuda.synchronize(device=torch.cuda.current_device())
+    device_util.synchronize(device_util.current_device())
     logger.info("Finished receiving weights")
 
     # Barrier can also hang, so add timeout
     logger.info("Waiting at barrier")
     try:
         dist.barrier(
-            group=weights_update_group, device_ids=[torch.cuda.current_device()]
+            group=weights_update_group, device_ids=[device_util.current_device()]
         )
         logger.info("Barrier completed")
     except TimeoutError:

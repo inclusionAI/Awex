@@ -30,3 +30,10 @@ dist/
 **/.pytest_cache
 .venv
 **/.idea
+
+# AWEX runtime/debug artifacts
+global_communication_plan_*.json
+local_communication_plan_*.json
+train_params_meta_*.json
+train_params_raw_meta_*.json
+train_params_non_converted_raw_meta_*.json

@@ -16,16 +16,17 @@
 # under the License.
 
 import importlib
+import inspect
 import pkgutil
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Callable, Dict
+from typing import Any, Callable, Dict, Optional
 
 from transformers import PretrainedConfig
 
 from awex import logging
-from awex.converter.mcore_converter import McoreToHFWeightConverter
 from awex.converter.sglang_converter import SGlangToHFWeightConverter
+from awex.converter.vllm_converter import VLLMToHFWeightConverter
 from awex.sharding.param_sharding import ShardingStrategy
 
 logger = logging.getLogger(__name__)
@@ -34,8 +35,8 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ModelConfig:
     sharding_strategy: Callable[..., ShardingStrategy]
-    mcore_converter: Callable[..., McoreToHFWeightConverter]
-    sglang_converter: Callable[..., SGlangToHFWeightConverter]
+    mcore_converter: Optional[Callable[..., Any]]
+    sglang_converter: Optional[Callable[..., Any]]
 
 
 class _ModelRegistry:
@@ -52,9 +53,17 @@ class _ModelRegistry:
             logger.info(f"Model {model_name} not found, using default strategy.")
             return ModelConfig(
                 sharding_strategy=ShardingStrategy,
-                mcore_converter=McoreToHFWeightConverter,
-                sglang_converter=SGlangToHFWeightConverter,
+                mcore_converter=None,
+                sglang_converter=None,
             )
+
+
+def _get_config_value(config, name: str, default=None):
+    if hasattr(config, name):
+        return getattr(config, name)
+    if isinstance(config, dict):
+        return config.get(name, default)
+    return default
 
 
 @lru_cache
@@ -98,17 +107,43 @@ def get_sharding_strategy(model_name: str):
     return config.sharding_strategy
 
 
+def _resolve_converter(
+    config_value: Optional[Callable[..., Any]],
+    default: Callable[..., Any],
+):
+    if config_value is None:
+        return default
+    if inspect.isclass(config_value):
+        return config_value
+    resolved = config_value()
+    if not inspect.isclass(resolved):
+        raise TypeError(f"Expected converter class from factory, got {type(resolved)}")
+    return resolved
+
+
 def get_train_weights_converter(
     engine_name: str,
     model_name: str,
     hf_config: PretrainedConfig,
     rank_info,
     infer_conf: Dict,
+    tf_config=None,
 ):
     config = ModelRegistry.get_model_config(model_name)
     if engine_name == "mcore":
-        converter = config.mcore_converter or McoreToHFWeightConverter
-        return converter(hf_config, rank_info, infer_conf)
+        from awex.converter.mcore_converter import McoreToHFWeightConverter
+
+        converter = _resolve_converter(
+            _get_config_value(config, "mcore_converter"),
+            McoreToHFWeightConverter,
+        )
+        if tf_config is None:
+            tf_config = (
+                infer_conf.get("tf_config") if isinstance(infer_conf, dict) else None
+            )
+        if tf_config is None:
+            raise ValueError("tf_config is required for McoreToHFWeightConverter")
+        return converter(hf_config, rank_info, infer_conf, tf_config=tf_config)
     else:
         raise NotImplementedError(f"Engine {engine_name} not implemented.")
 
@@ -122,7 +157,16 @@ def get_infer_weights_converter(
 ):
     config = ModelRegistry.get_model_config(model_name)
     if engine_name == "sglang":
-        converter = config.sglang_converter or SGlangToHFWeightConverter
+        converter = _resolve_converter(
+            _get_config_value(config, "sglang_converter"),
+            SGlangToHFWeightConverter,
+        )
+        return converter(hf_config, infer_engine_config, rank_info)
+    if engine_name == "vllm":
+        converter = _resolve_converter(
+            _get_config_value(config, "vllm_converter"),
+            VLLMToHFWeightConverter,
+        )
         return converter(hf_config, infer_engine_config, rank_info)
     else:
         raise NotImplementedError(f"Engine {engine_name} not implemented.")

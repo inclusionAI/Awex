@@ -68,6 +68,14 @@ def _resolve_local_model_dir_and_config(
     that need a local model directory (for Megatron or sglang) and
     supports both HuggingFace and ModelScope backends.
     """
+    # If an explicit local path exists, use it directly.
+    if os.path.exists(model_path):
+        hf_config = AutoConfig.from_pretrained(
+            model_path,
+            trust_remote_code=True,
+        )
+        return model_path, hf_config
+
     # Detect network and select source
     use_modelscope = False
     model_path_for_download = model_path
@@ -112,11 +120,10 @@ def _resolve_local_model_dir_and_config(
             hf_model_dir = model_path
     else:
         # Download from HuggingFace (or use local cache if already present)
-        from transformers import AutoModelForCausalLM
+        from huggingface_hub import snapshot_download
 
         print(f"Downloading {model_path} from HuggingFace...")
-        AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True)
-        hf_model_dir = model_path
+        hf_model_dir = snapshot_download(model_path)
 
     hf_config = AutoConfig.from_pretrained(
         hf_model_dir,
@@ -138,22 +145,27 @@ def get_local_model_dir(model_path: str = "Qwen/Qwen2-1.5B") -> str:
 
 def megatron_model_from_hf(
     model_path: str = "Qwen/Qwen2-1.5B",
+    use_mbridge: bool = True,
 ) -> Tuple[list, PretrainedConfig]:
     """Convert HF/ModelScope model to DCP format and load into Megatron.
 
     This function:
     1. Ensures the model is available locally (via HF or ModelScope)
-    2. Converts HF weights to Megatron DCP format using convert.py
+    2. By default, loads weights via mbridge (fast path for most models).
+       If use_mbridge=False, it converts HF weights to Megatron DCP format.
     3. Initializes Megatron model with TP=PP=DP=EP=CP=1
-    4. Loads the DCP checkpoint into Megatron model
+    4. Loads the DCP checkpoint into Megatron model (when not using mbridge)
     5. Returns Megatron model list and HF config
 
     Note:
-        This creates a temporary DCP checkpoint in /tmp/megatron_dcp_<model_name>
+        The DCP path creates a temporary checkpoint in /tmp/megatron_dcp_<model_name>.
     """
     import subprocess
     import sys
 
+    from awex.util.mindspeed import ensure_mindspeed_patched
+
+    ensure_mindspeed_patched("megatron_model_from_hf")
     hf_model_dir, hf_config = _resolve_local_model_dir_and_config(model_path)
 
     print("HF Config loaded:")
@@ -165,6 +177,22 @@ def megatron_model_from_hf(
         f"  Num KV heads: {getattr(hf_config, 'num_key_value_heads', hf_config.num_attention_heads)}"
     )
     print(f"  Vocab size: {hf_config.vocab_size}")
+
+    if (not use_mbridge) and str(getattr(hf_config, "model_type", "")).startswith(
+        "qwen3"
+    ):
+        print(
+            "Qwen3 conversion via Megatron-LM convert.py is not supported; "
+            "falling back to mbridge loading."
+        )
+        use_mbridge = True
+
+    if use_mbridge:
+        print("\nLoading HF weights into Megatron via mbridge...")
+        model = initialize_megatron_and_load_hf_with_mbridge(hf_config, hf_model_dir)
+        if isinstance(model, list):
+            return model, hf_config
+        return [model], hf_config
 
     # Create temporary directory for DCP checkpoint
     model_name = model_path.split("/")[-1]
@@ -266,6 +294,101 @@ def megatron_model_from_hf(
     return [model], hf_config
 
 
+def _ensure_mbridge_custom_fsdp_shim() -> None:
+    import importlib
+    import sys
+    import types
+
+    try:
+        importlib.import_module("megatron.core.distributed.custom_fsdp")
+        return
+    except Exception:
+        pass
+
+    try:
+        import megatron.core.distributed as dist_mod
+
+        fsdp_cls = getattr(dist_mod, "TorchFullyShardedDataParallel", None)
+    except Exception:
+        fsdp_cls = None
+
+    shim = types.ModuleType("megatron.core.distributed.custom_fsdp")
+    if fsdp_cls is None:
+
+        class _DummyFSDP:  # pragma: no cover - defensive path
+            def __init__(self, *args, **kwargs):
+                raise RuntimeError("custom_fsdp shim used without FSDP support")
+
+        shim.FullyShardedDataParallel = _DummyFSDP
+    else:
+        shim.FullyShardedDataParallel = fsdp_cls
+
+    sys.modules["megatron.core.distributed.custom_fsdp"] = shim
+
+
+def initialize_megatron_and_load_hf_with_mbridge(hf_config, hf_model_dir):
+    import torch.distributed as dist
+    from megatron.core import parallel_state as mpu
+
+    from awex.util import device as device_util
+    from awex.util.mindspeed import ensure_mindspeed_patched
+
+    ensure_mindspeed_patched("initialize_megatron_and_load_hf_with_mbridge")
+
+    # We use AutoBridge to create the Megatron model and load weights directly.
+    # Ensure Megatron parallel state is initialized for mbridge.
+    if device_util.get_device_type() in {"cuda", "npu"}:
+        device_env = os.environ.get("DEVICE")
+        if device_env is not None:
+            try:
+                device_id = int(device_env)
+                print(
+                    f"Setting torch device to {device_id} based on DEVICE={device_env}"
+                )
+                device_util.set_device(device_id)
+            except Exception as e:
+                print(f"Warning: Failed to set device from DEVICE={device_env}: {e}")
+
+    if not dist.is_initialized():
+        from awex.util.common import get_free_port
+
+        os.environ.setdefault("MASTER_ADDR", "localhost")
+        os.environ.setdefault("MASTER_PORT", str(get_free_port()))
+        os.environ.setdefault("RANK", "0")
+        os.environ.setdefault("WORLD_SIZE", "1")
+        if device_util.get_device_type() == "npu":
+            backend = "hccl"
+        elif torch.cuda.is_available():
+            backend = "nccl"
+        else:
+            backend = "gloo"
+        dist.init_process_group(backend=backend, rank=0, world_size=1)
+
+    if not mpu.model_parallel_is_initialized():
+        mpu.initialize_model_parallel(
+            tensor_model_parallel_size=1,
+            pipeline_model_parallel_size=1,
+            virtual_pipeline_model_parallel_size=None,
+            context_parallel_size=1,
+            expert_model_parallel_size=1,
+            create_gloo_process_groups=False,
+        )
+        from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
+
+        seed = int(os.environ.get("AWEX_MBRIDGE_SEED", "42"))
+        model_parallel_cuda_manual_seed(seed)
+
+    # Some Megatron builds don't ship custom_fsdp; shim it so mbridge can import.
+    _ensure_mbridge_custom_fsdp_shim()
+    from mbridge import AutoBridge
+
+    bridge = AutoBridge.from_pretrained(hf_model_dir)
+    model = bridge.get_model()
+    bridge.load_weights(model, hf_model_dir)
+
+    return model
+
+
 def initialize_megatron_and_load_checkpoint(dcp_dir, hf_config, hf_model_dir):
     """
     Initialize Megatron with all parallel sizes = 1 and load DCP checkpoint.
@@ -299,19 +422,19 @@ def initialize_megatron_and_load_checkpoint(dcp_dir, hf_config, hf_model_dir):
     # initializes directly on the requested GPU (e.g., device 1 for
     # training tests) rather than defaulting to device 0 and moving
     # later.
-    if torch.cuda.is_available():
+    from awex.util import device as device_util
+
+    if device_util.get_device_type() in {"cuda", "npu"}:
         device_env = os.environ.get("DEVICE")
         if device_env is not None:
             try:
                 device_id = int(device_env)
                 print(
-                    f"Setting torch CUDA device to {device_id} based on DEVICE={device_env}"
+                    f"Setting torch device to {device_id} based on DEVICE={device_env}"
                 )
-                torch.cuda.set_device(device_id)
+                device_util.set_device(device_id)
             except Exception as e:
-                print(
-                    f"Warning: Failed to set CUDA device from DEVICE={device_env}: {e}"
-                )
+                print(f"Warning: Failed to set device from DEVICE={device_env}: {e}")
 
     # Parse default args first
     args = parse_args(extra_args_provider=None, ignore_unknown_args=True)
@@ -364,20 +487,35 @@ def initialize_megatron_and_load_checkpoint(dcp_dir, hf_config, hf_model_dir):
     for key, value in config_dict.items():
         setattr(args, key, value)
 
+    # Ensure a default process group is initialized (required by Megatron >= 0.14).
+    import torch.distributed as dist
+
+    from awex.util.common import get_free_port
+
+    if not dist.is_initialized():
+        os.environ.setdefault("MASTER_ADDR", "localhost")
+        os.environ.setdefault("MASTER_PORT", str(get_free_port()))
+        os.environ.setdefault("RANK", "0")
+        os.environ.setdefault("WORLD_SIZE", "1")
+        dist.init_process_group(backend="nccl", rank=0, world_size=1)
+
     # Validate and set global variables
     validate_args(args)
     set_global_variables(args)
 
-    # Re-initialize model parallel state after set_global_variables
-    # set_global_variables may reset the parallel state, so we need to reinitialize
-    # Use the manual approach from Megatron's checkpoint loader
-    mpu.set_tensor_model_parallel_world_size(args.tensor_model_parallel_size)
-    mpu.set_pipeline_model_parallel_world_size(args.pipeline_model_parallel_size)
-    mpu.set_virtual_pipeline_model_parallel_world_size(
-        args.virtual_pipeline_model_parallel_size or 1
-    )
-    mpu.set_tensor_model_parallel_rank(0)
-    mpu.set_pipeline_model_parallel_rank(0)
+    # Re-initialize model parallel state after set_global_variables.
+    if not mpu.model_parallel_is_initialized():
+        mpu.initialize_model_parallel(
+            tensor_model_parallel_size=args.tensor_model_parallel_size,
+            pipeline_model_parallel_size=args.pipeline_model_parallel_size,
+            virtual_pipeline_model_parallel_size=args.virtual_pipeline_model_parallel_size,
+            context_parallel_size=getattr(args, "context_parallel_size", 1),
+            hierarchical_context_parallel_sizes=getattr(
+                args, "hierarchical_context_parallel_sizes", None
+            ),
+            expert_model_parallel_size=getattr(args, "expert_model_parallel_size", 1),
+            create_gloo_process_groups=False,
+        )
 
     # Initialize CUDA RNG tracker for model parallel
     from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed

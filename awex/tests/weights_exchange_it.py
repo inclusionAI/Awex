@@ -31,6 +31,7 @@ from awex.engine.mcore import MegatronEngine
 from awex.engine.sglang import SGLangEngine
 from awex.meta.meta_server import start_meta_server
 from awex.tests.test_utils import megatron_model_from_hf
+from awex.util import device as device_util
 
 logger = logging.getLogger(__name__)
 
@@ -142,13 +143,21 @@ class WeightsExchangeIT:
         self,
         inference_config=None,
         comm_backend=None,
+        device_backend: str | None = None,
     ):
+        self.device_backend = device_backend or device_util.get_device_type()
         self.comm_backend = comm_backend
         ip, port = start_meta_server()
         self.meta_server_addr = f"{ip}:{port}"
         self.inference_config = inference_config or copy.deepcopy(lite_inference_config)
+        if self.device_backend == "npu" and comm_backend == "nccl":
+            comm_backend = "hccl"
+        self.comm_backend = comm_backend
         self.inference_config["comm_backend"] = comm_backend
         self.inference_config["meta_server_addr"] = self.meta_server_addr
+        self.inference_config["device"] = (
+            "npu" if self.device_backend == "npu" else "cuda"
+        )
         self.train_config = {
             "meta_server_addr": self.meta_server_addr,
             "comm_backend": comm_backend,
@@ -167,7 +176,10 @@ class WeightsExchangeIT:
         self.sgl_engine.shutdown()
 
     def _init_sglang_engine(self):
-        os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, range(tp_size)))
+        if self.device_backend == "npu" and getattr(torch, "npu", None) is None:
+            raise RuntimeError("torch.npu is not available for NPU backend.")
+        visible_env = device_util.visible_devices_env_names()[0]
+        os.environ[visible_env] = ",".join(map(str, range(tp_size)))
         import sglang as sgl
 
         from awex.engine.sglang import extract_sgl_config
@@ -178,7 +190,7 @@ class WeightsExchangeIT:
         self.sgl_engine = sgl_engine
         self.sglang_engine = SGLangEngine(self.inference_config, sgl_engine)
         self.sglang_engine.initialize()
-        os.environ.pop("CUDA_VISIBLE_DEVICES")
+        os.environ.pop(visible_env, None)
         logger.info("SGLang backend initialized")
 
     def _init_megatron_engine(self):
@@ -188,13 +200,15 @@ class WeightsExchangeIT:
         self.train_config["num_layers"] = 4
 
         os.environ["RANK"] = "0"
-        os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, range(tp_size + 1)))
+        visible_env = device_util.visible_devices_env_names()[0]
+        os.environ[visible_env] = ",".join(map(str, range(tp_size + 1)))
         os.environ["DEVICE"] = f"{tp_size}"
         os.environ["LOCAL_RANK"] = f"{tp_size}"
         os.environ["MASTER_PORT"] = "17443"
         os.environ["MASTER_ADDR"] = "localhost"
         os.environ["WORLD_SIZE"] = "1"
 
+        device_util.set_device(tp_size)
         self.mcore_model, self.mcore_hf_config = self.setup_megatron()
         self.megatron_engine = MegatronEngine(
             self.train_config, self.mcore_hf_config, self.mcore_model
@@ -358,6 +372,7 @@ def main(args):
     comm_backend = args.comm_backend
     weights_exchange_it = WeightsExchangeIT(
         comm_backend=comm_backend,
+        device_backend=args.device_backend,
     )
     weights_exchange_it.initialize()
     # warm up and init nccl
@@ -376,6 +391,22 @@ def main(args):
 if __name__ == "__main__":
     # export PYTHONPATH=$MegatronLM:$PYTHONPATH
     parser = argparse.ArgumentParser(description="Run awex integration test cases")
-    parser.add_argument("-b", "--comm_backend", required=True, help="file|nccl|astate")
+    parser.add_argument(
+        "-b",
+        "--comm_backend",
+        required=True,
+        help="file|nccl|hccl|astate",
+    )
+    parser.add_argument(
+        "--device-backend",
+        choices=["auto", "cuda", "npu", "cpu"],
+        default="auto",
+        help="Device backend to use (auto/cuda/npu/cpu).",
+    )
     args = parser.parse_args()
+    if args.device_backend and args.device_backend != "auto":
+        os.environ["AWEX_DEVICE_TYPE"] = args.device_backend
+    if device_util.get_device_type() == "npu" and args.comm_backend == "nccl":
+        logger.warning("Switching comm_backend from nccl to hccl for NPU backend.")
+        args.comm_backend = "hccl"
     main(args)

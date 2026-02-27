@@ -58,17 +58,17 @@ class MetaServer:
         self._server_error = None
 
         # Define routes
-        self.app.router.add_get("/v1/get_binary/{key}", self.get_binary_handler)
-        self.app.router.add_put("/v1/put_binary/{key}", self.put_binary_handler)
+        self.app.router.add_get("/v1/get_binary/{key:.*}", self.get_binary_handler)
+        self.app.router.add_put("/v1/put_binary/{key:.*}", self.put_binary_handler)
         self.app.router.add_put(
-            "/v1/add_object_to_set/{key}", self.add_object_to_set_handler
+            "/v1/add_object_to_set/{key:.*}", self.add_object_to_set_handler
         )
-        self.app.router.add_get("/v1/get_json/{key}", self.get_json_handler)
-        self.app.router.add_put("/v1/put_json/{key}", self.put_json_handler)
-        self.app.router.add_delete("/v1/delete/{key}", self.delete_handler)
+        self.app.router.add_get("/v1/get_json/{key:.*}", self.get_json_handler)
+        self.app.router.add_put("/v1/put_json/{key:.*}", self.put_json_handler)
+        self.app.router.add_delete("/v1/delete/{key:.*}", self.delete_handler)
         self.app.router.add_get("/v1/health", self.health_check)
         self.app.router.add_get("/v1/keys", self.list_keys)
-        self.app.router.add_get("/v1/has_key/{key}", self.has_key)
+        self.app.router.add_get("/v1/has_key/{key:.*}", self.has_key)
         self.app.router.add_post(
             "/v1/allocate_auto_grow_id", self.allocate_auto_grow_id
         )
