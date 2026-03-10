@@ -186,6 +186,7 @@ class WeightsReader(WeightExchangeReader):
             self.expected_pp_ranks,
         )
         self.infer_conf = {
+            "engine_name": self.inference_engine.engine_name,
             "infer_atten_tp_size": self.meta_resolver.rank0_info.attn_tp_size,
             "router_dtype": getattr(self.hf_config, "router_dtype", "bf16"),
             "infer_engine_config": self.infer_engine_config,
