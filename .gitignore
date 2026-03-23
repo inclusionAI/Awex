@@ -37,3 +37,5 @@ local_communication_plan_*.json
 train_params_meta_*.json
 train_params_raw_meta_*.json
 train_params_non_converted_raw_meta_*.json
+
+tasks/
