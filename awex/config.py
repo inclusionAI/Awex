@@ -19,6 +19,15 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 
 
+class InferenceConfigValidationError(ValueError):
+    """Raised when InferenceConfig contains invalid or inconsistent settings."""
+    pass
+
+
+_VALID_COMM_BACKENDS: frozenset = frozenset({"file", "nccl", "hccl", "astate"})
+_VALID_IPC_BACKENDS: frozenset = frozenset({"cpu", "cuda"})
+
+
 @dataclass
 class InferenceConfig:
     """
@@ -78,6 +87,107 @@ class InferenceConfig:
     weights_exchange_ipc_backend: str = "cuda"
     weights_comm_nccl_group_size: int = 1
 
+    def validate(self) -> None:
+        """Validate configuration fields for consistency and correctness.
+
+        Raises:
+            InferenceConfigValidationError: if any field is invalid or fields are inconsistent.
+        """
+        errors: List[str] = []
+
+        # comm_backend must be one of the known values
+        if self.comm_backend not in _VALID_COMM_BACKENDS:
+            errors.append(
+                f"comm_backend must be one of {sorted(_VALID_COMM_BACKENDS)}, got {self.comm_backend!r}"
+            )
+
+        # weights_exchange_ipc_backend must be one of the known values
+        if self.weights_exchange_ipc_backend not in _VALID_IPC_BACKENDS:
+            errors.append(
+                f"weights_exchange_ipc_backend must be one of {sorted(_VALID_IPC_BACKENDS)}, "
+                f"got {self.weights_exchange_ipc_backend!r}"
+            )
+
+        # engine_rank must be in [0, num_engines)
+        if self.num_engines < 1:
+            errors.append(f"num_engines must be >= 1, got {self.num_engines}")
+        elif not (0 <= self.engine_rank < self.num_engines):
+            errors.append(
+                f"engine_rank must be in [0, num_engines), "
+                f"got engine_rank={self.engine_rank} with num_engines={self.num_engines}"
+            )
+
+        # parallelism sizes must be positive when set
+        for name, val in [
+            ("tp_size", self.tp_size),
+            ("pp_size", self.pp_size),
+            ("dp_size", self.dp_size),
+            ("ep_size", self.ep_size),
+            ("moe_dense_tp_size", self.moe_dense_tp_size),
+            ("weights_comm_nccl_group_size", self.weights_comm_nccl_group_size),
+        ]:
+            if val is not None and val < 1:
+                errors.append(f"{name} must be >= 1 when set, got {val}")
+
+        # node_rank must be consistent with nnodes
+        if self.nnodes is not None:
+            if self.nnodes < 1:
+                errors.append(f"nnodes must be >= 1 when set, got {self.nnodes}")
+            elif self.node_rank is not None and not (0 <= self.node_rank < self.nnodes):
+                errors.append(
+                    f"node_rank must be in [0, nnodes), "
+                    f"got node_rank={self.node_rank} with nnodes={self.nnodes}"
+                )
+
+        # validate_weights_every_n_steps must be positive
+        if self.validate_weights_every_n_steps < 1:
+            errors.append(
+                f"validate_weights_every_n_steps must be >= 1, "
+                f"got {self.validate_weights_every_n_steps}"
+            )
+
+        # weights_validation_steps must be non-negative
+        if self.weights_validation_steps < 0:
+            errors.append(
+                f"weights_validation_steps must be >= 0, got {self.weights_validation_steps}"
+            )
+
+        # dump_weights_dir_for_validation is required when dump_weights_list_for_validation is non-empty
+        if self.dump_weights_list_for_validation and not self.dump_weights_dir_for_validation:
+            errors.append(
+                "dump_weights_dir_for_validation must be set when "
+                "dump_weights_list_for_validation is non-empty"
+            )
+
+        # ep_num_redundant_experts requires ep_size
+        if self.ep_num_redundant_experts is not None and self.ep_size is None:
+            errors.append("ep_num_redundant_experts requires ep_size to be set")
+
+        # enable_eplb requires ep_size
+        if self.enable_eplb and self.ep_size is None:
+            errors.append("enable_eplb requires ep_size to be set")
+
+        # non-file comm_backend requires meta_server_addr for multi-engine setups
+        if self.num_engines > 1 and self.comm_backend != "file" and not self.meta_server_addr:
+            errors.append(
+                f"meta_server_addr must be set when num_engines > 1 "
+                f"and comm_backend is {self.comm_backend!r}"
+            )
+
+        if errors:
+            msg = "InferenceConfig validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
+            raise InferenceConfigValidationError(msg)
+
+    def validated(self) -> "InferenceConfig":
+        """Call validate() and return self for easy chaining.
+
+        Example::
+
+            config = InferenceConfig.from_dict(d).validated()
+        """
+        self.validate()
+        return self
+
     @staticmethod
     def from_dict(config_dict: Dict[str, Any]) -> "InferenceConfig":
         # remove all keys that are not fields of InferenceConfig
@@ -86,7 +196,9 @@ class InferenceConfig:
             for k, v in config_dict.items()
             if k in InferenceConfig.__dataclass_fields__
         }
-        return InferenceConfig(**config_dict)
+        cfg = InferenceConfig(**config_dict)
+        cfg.validate()
+        return cfg
 
     @staticmethod
     def from_sgl_engine(sgl_engine, **extra_config) -> "InferenceConfig":
