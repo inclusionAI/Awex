@@ -19,7 +19,9 @@ from types import SimpleNamespace
 
 from transformers import PretrainedConfig
 
+from awex.models import get_sharding_strategy
 from awex.models.registry import get_train_weights_converter
+from awex.sharding.param_sharding import ShardingType
 from awex.sharding.rank_info import RankInfo
 
 
@@ -63,3 +65,47 @@ def test_bailing_moe_train_converter_accepts_tf_config():
     )
 
     assert converter.tf_config is tf_config
+
+
+def test_bailing_linear_train_converter_accepts_tf_config():
+    cfg = PretrainedConfig()
+    cfg.quantization_config = {}
+    rank_info = _make_rank_info()
+    infer_conf = {"infer_atten_tp_size": 1}
+    tf_config = SimpleNamespace(layer_group_size=4)
+
+    converter = get_train_weights_converter(
+        "mcore",
+        "BailingMoeV2_5ForCausalLM",
+        cfg,
+        rank_info,
+        infer_conf,
+        tf_config=tf_config,
+    )
+
+    assert converter.tf_config is tf_config
+
+
+def test_bailing_linear_sharding_strategy_handles_mla_exceptions():
+    rank_info = _make_rank_info()
+    rank_info.tp_size = 2
+    strategy_cls = get_sharding_strategy("BailingMoeV2_5ForCausalLM")
+    strategy = strategy_cls(
+        engine_name="sglang",
+        enable_dp_attention=False,
+        enable_dp_lm_head=False,
+        moe_dense_tp_size=2,
+        tp_size=2,
+        ep_size=1,
+        ep_tp_size=1,
+        rank_info=rank_info,
+    )
+
+    assert strategy.get_sharding_strategy("model.layers.0.attention.g_norm.weight") == (
+        ShardingType.TP_SHARDING,
+        0,
+        2,
+    )
+    assert strategy.get_sharding_strategy(
+        "model.layers.0.attention.kv_a_proj_with_mqa.weight"
+    ) == (ShardingType.NO_SHARDING, 0, 1)
