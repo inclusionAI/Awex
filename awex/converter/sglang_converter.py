@@ -21,6 +21,8 @@ from typing import List, Tuple
 import torch
 from transformers import PretrainedConfig
 
+from awex.converter.weights_converter import append_scale_inv, normalize_scale_inv_name
+
 
 # all sglang related imports must be local imports to avoid import error if
 # users use other engine.
@@ -392,3 +394,81 @@ class SGlangToHFWeightConverter:
         else:
             # For non-layer parameters, keep as is
             return [(name, parameter)]
+
+
+class LinearMLASGlangConverterMixin:
+    def _fuse_qkv(self, name: str) -> bool:
+        return True
+
+    def _fuse_gate_up_proj(self, name: str) -> bool:
+        return False
+
+    def _convert_layer_norm_param(
+        self, name: str, parameter: torch.Tensor, layer_number: str
+    ) -> List[Tuple[str, torch.Tensor]]:
+        base_name, has_scale_inv = normalize_scale_inv_name(name)
+        direct_params = {
+            "input_layernorm.weight",
+            "post_attention_layernorm.weight",
+            "attention.g_norm.weight",
+            "attention.query_layernorm.weight",
+            "attention.key_layernorm.weight",
+            "attention.kv_a_layernorm.weight",
+            "attention.q_a_layernorm.weight",
+        }
+        if base_name in direct_params:
+            return [(append_scale_inv(base_name, has_scale_inv), parameter)]
+        return super()._convert_layer_norm_param(name, parameter, layer_number)
+
+    def _convert_attention_param(
+        self, name: str, parameter: torch.Tensor, layer_number: str
+    ) -> List[Tuple[str, torch.Tensor]]:
+        base_name, has_scale_inv = normalize_scale_inv_name(name)
+        name_mapping = {
+            "attention.g_proj.weight": "attention.g_proj.weight",
+            "attention.q_proj.weight": "attention.q_proj.weight",
+            "attention.k_proj.weight": "attention.k_proj.weight",
+            "attention.v_proj.weight": "attention.v_proj.weight",
+            "attention.dense.weight": "attention.dense.weight",
+            "attention.o_proj.weight": "attention.dense.weight",
+            "attention.g_norm.weight": "attention.g_norm.weight",
+            "attention.query_layernorm.weight": "attention.query_layernorm.weight",
+            "attention.key_layernorm.weight": "attention.key_layernorm.weight",
+            "attention.kv_a_proj_with_mqa.weight": "attention.kv_a_proj_with_mqa.weight",
+            "attention.kv_b_proj.weight": "attention.kv_b_proj.weight",
+            "attention.kv_a_layernorm.weight": "attention.kv_a_layernorm.weight",
+            "attention.q_b_proj.weight": "attention.q_b_proj.weight",
+            "attention.q_a_layernorm.weight": "attention.q_a_layernorm.weight",
+            "attention.q_a_proj.weight": "attention.q_a_proj.weight",
+            "attention.fused_qkv_a_proj_with_mqa.weight": "attention.fused_qkv_a_proj_with_mqa.weight",
+        }
+        if base_name in name_mapping:
+            target_name = name_mapping[base_name]
+            return [(append_scale_inv(target_name, has_scale_inv), parameter)]
+
+        if base_name in {
+            "attention.query_key_value.weight",
+            "self_attn.qkv_proj.weight",
+        } and self._fuse_qkv(base_name):
+            return [
+                (
+                    append_scale_inv("attention.query_key_value.weight", has_scale_inv),
+                    parameter,
+                )
+            ]
+
+        if base_name in {
+            "attention.query_key_value.bias",
+            "self_attn.qkv_proj.bias",
+        } and self._fuse_qkv(base_name):
+            return [
+                (
+                    append_scale_inv("attention.query_key_value.bias", has_scale_inv),
+                    parameter,
+                )
+            ]
+
+        if "o_proj" in base_name or "dense" in base_name:
+            return [(append_scale_inv(base_name, has_scale_inv), parameter)]
+
+        return super()._convert_attention_param(name, parameter, layer_number)

@@ -21,11 +21,19 @@ We normalize vLLM self-attention names to the HF-style projection naming
 used by Awex converters (e.g., qkv/qkv_proj -> query_key_value_proj).
 """
 
-from awex.converter.sglang_converter import SGlangToHFWeightConverter
+from awex.converter.sglang_converter import (
+    LinearMLASGlangConverterMixin,
+    SGlangToHFWeightConverter,
+)
+from awex.converter.weights_converter import append_scale_inv, normalize_scale_inv_name
 
 
-class VLLMToHFWeightConverter(SGlangToHFWeightConverter):
+class VLLMToHFWeightConverter(
+    LinearMLASGlangConverterMixin,
+    SGlangToHFWeightConverter,
+):
     def _normalize_name(self, name: str) -> str:
+        name, has_scale_inv = normalize_scale_inv_name(name)
         replacements = [
             (".self_attn.attn.qkv", ".attention.query_key_value_proj"),
             (".self_attn.attn.qkv_proj", ".attention.query_key_value_proj"),
@@ -42,7 +50,7 @@ class VLLMToHFWeightConverter(SGlangToHFWeightConverter):
                 name = name.replace(old, new)
         # Guard against double normalization.
         name = name.replace("query_key_value_proj_proj", "query_key_value_proj")
-        return name
+        return append_scale_inv(name, has_scale_inv)
 
     def convert_param(self, name, parameter):
         return super().convert_param(self._normalize_name(name), parameter)

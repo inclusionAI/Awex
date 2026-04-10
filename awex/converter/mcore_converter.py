@@ -736,6 +736,204 @@ class McoreToHFWeightConverter:
             raise NotImplementedError(f"Unsupported parameter name: {name}")
 
 
+class LinearMLAMcoreConverterMixin:
+    def __init__(
+        self,
+        hf_config: PretrainedConfig,
+        rank_info: RankInfo,
+        infer_conf: Dict,
+        tf_config: TransformerConfig,
+    ):
+        super().__init__(hf_config, rank_info, infer_conf, tf_config=tf_config)
+        self.layer_group_size = int(_cfg_get(tf_config, "layer_group_size", 1) or 1)
+        self.linear_attn_norm_group_size = _cfg_get(
+            tf_config, "linear_attn_norm_group_size", None
+        )
+        self.fuse_qkv_a_proj = getattr(hf_config, "q_lora_rank", None) is not None
+        self.qkv_a_proj_cache: Dict[str, Dict[str, torch.Tensor]] = {}
+
+    def _post_process_linear_mla_params(
+        self, converted_params: List[Tuple[str, torch.Tensor]]
+    ) -> List[Tuple[str, torch.Tensor]]:
+        return converted_params
+
+    def _is_linear_layer(self, layer_number: int) -> bool:
+        if self.layer_group_size <= 1:
+            return False
+        return (layer_number + 1) % self.layer_group_size != 0
+
+    def _convert_g_norm_weight(self, parameter: torch.Tensor) -> torch.Tensor:
+        if not self.linear_attn_norm_group_size:
+            return parameter.clone().detach()
+        group_size = int(self.linear_attn_norm_group_size)
+        tp_size = max(int(self.rank_info.tp_size), 1)
+        return parameter.clone().detach().reshape(group_size // tp_size, -1)
+
+    def _convert_lightning_attention_param(
+        self, name: str, parameter: torch.Tensor, layer_number: str
+    ) -> List[Tuple[str, torch.Tensor]]:
+        if "self_attention.pre_gate_norm.te_norm.weight" in name:
+            return []
+        if "self_attention.pre_gate_norm.weight" in name:
+            return [("attention.g_norm.weight", self._convert_g_norm_weight(parameter))]
+
+        name_mapping = {
+            "self_attention.input_layernorm.weight": "input_layernorm.weight",
+            "self_attention.linear_gate.weight": "attention.g_proj.weight",
+            "self_attention.linear_proj.weight": "attention.dense.weight",
+            "self_attention.q_layernorm.weight": "attention.query_layernorm.weight",
+            "self_attention.k_layernorm.weight": "attention.key_layernorm.weight",
+        }
+        for src_name, target_name in name_mapping.items():
+            if src_name in name:
+                return [(target_name, parameter)]
+
+        if "self_attention.linear_qkv.weight" in name:
+            parameter = convert_qkv_weight_along_tp_attention(
+                parameter,
+                self.infer_atten_tp_size,
+                self.tf_config,
+                train_tp_rank=self.rank_info.attn_tp_rank,
+                train_tp_size=self.rank_info.attn_tp_size,
+            )
+            return [("attention.query_key_value.weight", parameter)]
+
+        return super()._convert_attention_param(name, parameter, layer_number)
+
+    def _try_fuse_qkv_a_proj(
+        self, target_name: str, parameter: torch.Tensor, layer_number: str
+    ) -> List[Tuple[str, torch.Tensor]]:
+        layer_cache = self.qkv_a_proj_cache.setdefault(layer_number, {})
+        if target_name.endswith("kv_a_proj_with_mqa.weight"):
+            cache_key = "kv_a_proj"
+            other_key = "q_a_proj"
+        elif target_name.endswith("q_a_proj.weight"):
+            cache_key = "q_a_proj"
+            other_key = "kv_a_proj"
+        else:
+            return [(target_name, parameter)]
+
+        layer_cache[cache_key] = parameter
+        if other_key not in layer_cache:
+            return []
+
+        fused_tensor = torch.cat(
+            [layer_cache["q_a_proj"], layer_cache["kv_a_proj"]], dim=0
+        )
+        del self.qkv_a_proj_cache[layer_number]
+        return [("attention.fused_qkv_a_proj_with_mqa.weight", fused_tensor)]
+
+    def _convert_mla_attention_param(
+        self, name: str, parameter: torch.Tensor, layer_number: str
+    ) -> List[Tuple[str, torch.Tensor]]:
+        name_mapping = {
+            "input_layernorm.weight": "input_layernorm.weight",
+            "self_attention.linear_proj.weight": "attention.dense.weight",
+            "self_attention.linear_q_proj.weight": "attention.q_proj.weight",
+            "self_attention.linear_kv_down_proj.weight": "attention.kv_a_proj_with_mqa.weight",
+            "self_attention.linear_q_down_proj.weight": "attention.q_a_proj.weight",
+            "self_attention.linear_kv_up_proj.weight": "attention.kv_b_proj.weight",
+            "self_attention.linear_kv_up_proj.layer_norm_weight": "attention.kv_a_layernorm.weight",
+            "self_attention.linear_q_up_proj.weight": "attention.q_b_proj.weight",
+            "self_attention.linear_q_up_proj.layer_norm_weight": "attention.q_a_layernorm.weight",
+        }
+        for src_name, target_name in name_mapping.items():
+            if src_name not in name:
+                continue
+            if target_name in {
+                "attention.kv_a_proj_with_mqa.weight",
+                "attention.q_a_proj.weight",
+            }:
+                parameter = get_full_tensor(parameter, dim=0)
+                if self.rank_info.tp_rank != 0:
+                    return []
+                if self.fuse_qkv_a_proj:
+                    return self._try_fuse_qkv_a_proj(
+                        target_name, parameter, layer_number
+                    )
+            return [(target_name, parameter)]
+
+        return super()._convert_attention_param(name, parameter, layer_number)
+
+    def _convert_attention_param(
+        self, name: str, parameter: torch.Tensor, layer_number: str
+    ) -> List[Tuple[str, torch.Tensor]]:
+        if self._is_linear_layer(int(layer_number)):
+            return self._convert_lightning_attention_param(
+                name, parameter, layer_number
+            )
+        return self._convert_mla_attention_param(name, parameter, layer_number)
+
+    @torch.no_grad()
+    def convert_param(
+        self, name: str, parameter: torch.Tensor, vp_stage: int = None
+    ) -> List[Tuple[str, torch.Tensor]]:
+        name = name.replace("module.", "")
+        name = _process_mcore_pp_name(
+            name,
+            self.rank_info,
+            self.hf_config,
+            self.tf_config,
+            vp_stage=vp_stage,
+            pp_stage_layer_id_map=self._pp_stage_layer_id_map,
+        )
+        direct_name_mapping = {
+            "embedding.word_embeddings.weight": "model.embed_tokens.weight",
+            "decoder.final_layernorm.weight": "model.norm.weight",
+        }
+        if name in direct_name_mapping:
+            return [(direct_name_mapping[name], parameter)]
+        if "output_layer.weight" in name:
+            return self._post_process_linear_mla_params(
+                self._convert_lm_head_param(name, parameter)
+            )
+
+        if not name.startswith("decoder.layers."):
+            raise NotImplementedError(f"Unsupported parameter name: {name}")
+
+        layer_number, remaining_name = name.replace("decoder.layers.", "", 1).split(
+            ".",
+            1,
+        )
+
+        if "self_attention" in remaining_name:
+            converted = []
+            for attn_name, param in self._convert_attention_param(
+                remaining_name, parameter, layer_number
+            ):
+                attn_name = self._normalize_attn_name(attn_name)
+                converted.append((f"model.layers.{layer_number}.{attn_name}", param))
+            return self._post_process_linear_mla_params(converted)
+
+        if (
+            "input_layernorm.weight" in remaining_name
+            or "g_norm.weight" in remaining_name
+        ):
+            return self._post_process_linear_mla_params(
+                [(f"model.layers.{layer_number}.{remaining_name}", parameter)]
+            )
+
+        if "mlp" in remaining_name:
+            if "mlp.gate.weight" in name or "mlp.router.weight" in name:
+                name, param = self._convert_gate(name, parameter)
+                converted = [(f"model.layers.{layer_number}.{name}", param)]
+            elif "expert_bias" in name:
+                name, param = self._convert_expert_bias_param(
+                    name, parameter, layer_number
+                )
+                converted = [(f"model.layers.{layer_number}.{name}", param)]
+            else:
+                converted = [
+                    (f"model.layers.{layer_number}.{name}", param)
+                    for name, param in self._convert_mlp_param(
+                        remaining_name, parameter, layer_number
+                    )
+                ]
+            return self._post_process_linear_mla_params(converted)
+
+        raise NotImplementedError(f"Unsupported parameter name: {name}")
+
+
 def get_full_tensor(weight: torch.Tensor, dim: int = 0):
     from megatron.core import parallel_state as mpu
 

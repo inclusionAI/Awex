@@ -22,6 +22,19 @@ from awex import logging
 logger = logging.getLogger(__name__)
 
 
+def normalize_scale_inv_name(name: str) -> tuple[str, bool]:
+    suffix = "_scale_inv"
+    if name.endswith(suffix):
+        return name[: -len(suffix)], True
+    return name, False
+
+
+def append_scale_inv(name: str, has_scale_inv: bool) -> str:
+    if has_scale_inv:
+        return f"{name}_scale_inv"
+    return name
+
+
 def ceil_div(x: int, y: int) -> int:
     return (x + y - 1) // y
 
