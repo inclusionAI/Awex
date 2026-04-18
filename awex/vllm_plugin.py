@@ -308,7 +308,7 @@ def _patch_awex_worker() -> None:
             )
         base_config = self._awex_infer_engine_config
         if infer_engine_config is not None:
-            merged = InferenceConfig.from_dict(base_config.__dict__)
+            merged = InferenceConfig.from_dict(base_config.__dict__, False)
             for field in InferenceConfig.__dataclass_fields__:
                 value = getattr(infer_engine_config, field, None)
                 if value is not None:

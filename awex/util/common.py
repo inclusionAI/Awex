@@ -246,7 +246,8 @@ def check_train_infer_params_meta(
                 logger.error(error_msg)
         infer_tp_size = len(infer_param_meta.replicas[0].shards)
         train_tp_size = len(train_param_meta.replicas[0].shards)
-        if infer_tp_size < train_tp_size or infer_tp_size % train_tp_size != 0:
+        max_tp, min_tp = max(infer_tp_size, train_tp_size), min(infer_tp_size, train_tp_size)
+        if max_tp % min_tp != 0:
             error_msg = (
                 f"Inference for parameter {param_name} has wrong tp_size: "
                 f"infer {infer_tp_size} train {train_tp_size}"

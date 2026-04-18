@@ -189,7 +189,7 @@ class InferenceConfig:
         return self
 
     @staticmethod
-    def from_dict(config_dict: Dict[str, Any]) -> "InferenceConfig":
+    def from_dict(config_dict: Dict[str, Any], validate: bool = True) -> "InferenceConfig":
         # remove all keys that are not fields of InferenceConfig
         config_dict = {
             k: v
@@ -197,7 +197,8 @@ class InferenceConfig:
             if k in InferenceConfig.__dataclass_fields__
         }
         cfg = InferenceConfig(**config_dict)
-        cfg.validate()
+        if validate:
+            cfg.validate()
         return cfg
 
     @staticmethod
