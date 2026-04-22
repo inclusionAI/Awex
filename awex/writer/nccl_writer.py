@@ -122,7 +122,6 @@ class NCCLWeightsWriter(WeightsExchangeShardingWriter):
         )
 
     def _shake_hands_with_reader(self):
-
         if self.transfer_rank == self.transfer_world_size - 1:
             logger.info(
                 f"Start to test NCCL ready for rank {self.transfer_rank}, world size {self.transfer_world_size}"

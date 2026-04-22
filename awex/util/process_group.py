@@ -16,9 +16,11 @@
 # under the License.
 
 import os
+from importlib.metadata import version
 
 import torch
 import torch.distributed as dist
+from packaging.version import Version
 
 from awex import logging
 from awex.util import device as device_util
@@ -78,7 +80,9 @@ def init_custom_process_group(
     # https://github.com/pytorch/pytorch/commit/a0c7029a75628cd5fa8df83c0de0ea98ee7fd844
     # We need to determine the appropriate parameter name based on PyTorch version
     pg_options_param_name = (
-        "backend_options" if str(torch.__version__) >= "2.6" else "pg_options"
+        "backend_options"
+        if Version(version("torch")) >= Version("2.6")
+        else "pg_options"
     )
     pg, _ = _new_process_group_helper(
         world_size,
@@ -157,7 +161,7 @@ def create_pair_subgroups_from_parent(parent_group, world_size):
                 # Determine the appropriate parameter name based on PyTorch version
                 pg_options_param_name = (
                     "backend_options"
-                    if str(torch.__version__) >= "2.6"
+                    if Version(version("torch")) >= Version("2.6")
                     else "pg_options"
                 )
 

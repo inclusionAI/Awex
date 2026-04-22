@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 class InferenceConfigValidationError(ValueError):
     """Raised when InferenceConfig contains invalid or inconsistent settings."""
+
     pass
 
 
@@ -153,7 +154,10 @@ class InferenceConfig:
             )
 
         # dump_weights_dir_for_validation is required when dump_weights_list_for_validation is non-empty
-        if self.dump_weights_list_for_validation and not self.dump_weights_dir_for_validation:
+        if (
+            self.dump_weights_list_for_validation
+            and not self.dump_weights_dir_for_validation
+        ):
             errors.append(
                 "dump_weights_dir_for_validation must be set when "
                 "dump_weights_list_for_validation is non-empty"
@@ -168,14 +172,20 @@ class InferenceConfig:
             errors.append("enable_eplb requires ep_size to be set")
 
         # non-file comm_backend requires meta_server_addr for multi-engine setups
-        if self.num_engines > 1 and self.comm_backend != "file" and not self.meta_server_addr:
+        if (
+            self.num_engines > 1
+            and self.comm_backend != "file"
+            and not self.meta_server_addr
+        ):
             errors.append(
                 f"meta_server_addr must be set when num_engines > 1 "
                 f"and comm_backend is {self.comm_backend!r}"
             )
 
         if errors:
-            msg = "InferenceConfig validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
+            msg = "InferenceConfig validation failed:\n" + "\n".join(
+                f"  - {e}" for e in errors
+            )
             raise InferenceConfigValidationError(msg)
 
     def validated(self) -> "InferenceConfig":
@@ -189,7 +199,9 @@ class InferenceConfig:
         return self
 
     @staticmethod
-    def from_dict(config_dict: Dict[str, Any], validate: bool = True) -> "InferenceConfig":
+    def from_dict(
+        config_dict: Dict[str, Any], validate: bool = True
+    ) -> "InferenceConfig":
         # remove all keys that are not fields of InferenceConfig
         config_dict = {
             k: v

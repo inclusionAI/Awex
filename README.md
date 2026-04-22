@@ -5,7 +5,6 @@
 [![Python Versions](https://img.shields.io/pypi/pyversions/awex.svg?style=for-the-badge&logo=python)](https://pypi.org/project/awex/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=for-the-badge)](https://opensource.org/licenses/Apache-2.0)
 
-
 **Awex** is a high-performance RL training-inference **weight synchronization** framework,
 designed to enable **second-level parameter updates** from training to inference in RL workflows.
 It minimizes iteration latency, ensuring rollout phases consistently use the latest model.
@@ -139,6 +138,7 @@ These scripts compare weight formats across Megatron, vLLM, and SGLang by
 converting all parameters into HF-style names and then diffing tensors.
 
 **Intended use** (for new model bring‑up):
+
 - These scripts primarily validate Awex converter coverage. They help answer:
   “Does the current converter support this new model, or do we need mapping fixes?”
 - If your target stack is **Megatron → vLLM**, usually running
@@ -147,6 +147,7 @@ converting all parameters into HF-style names and then diffing tensors.
   parity (or you’re adding SGLang support for a new model).
 
 **GPU/NPU notes**
+
 - All compare/verify scripts accept `--device-backend` (auto/cuda/npu/cpu), but
   they are **CUDA-only today** because vLLM/SGLang backends require CUDA.
   Use `--device-backend cuda` explicitly if auto-detection picks the wrong device.
@@ -154,15 +155,17 @@ converting all parameters into HF-style names and then diffing tensors.
   validate the **runtime weight update** path on NPU with the integration tests.
 
 ### Naming normalization (why `self_attn.qkv_proj` becomes `attention.query_key_value_proj`)
+
 Awex normalizes parameter names from different backends into a single canonical
 HF-style naming scheme so Megatron, vLLM, and SGLang can be compared directly.
 There are three “namespaces” involved:
 
-1) **Megatron (mcore) names** – e.g. `decoder.layers.0.self_attention.linear_qkv.weight`  
-2) **vLLM/SGLang names** – e.g. `model.layers.0.self_attn.qkv_proj.weight`  
-3) **Awex canonical HF-style names** – e.g. `model.layers.0.attention.query_key_value_proj.weight`
+1. **Megatron (mcore) names** – e.g. `decoder.layers.0.self_attention.linear_qkv.weight`
+2. **vLLM/SGLang names** – e.g. `model.layers.0.self_attn.qkv_proj.weight`
+3. **Awex canonical HF-style names** – e.g. `model.layers.0.attention.query_key_value_proj.weight`
 
 Example for **QKV** conversion:
+
 - Megatron `self_attention.linear_qkv.weight`  
   → (mcore converter) `self_attn.qkv_proj.weight`  
   → (normalize) `attention.query_key_value_proj.weight`
@@ -283,6 +286,7 @@ Ascend and **vllm-ascend** on the inference side.
   should remain disabled in normal runs.
 
 **What is NOT NPU-ready yet**
+
 - `compare_megatron_vllm_weights.py`, `verify_weight_conversion.py`, and
   `compare_vllm_sglang_weights.py` are **CUDA-only** (they rely on vLLM CUDA
   kernels and torch.cuda).

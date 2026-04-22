@@ -306,7 +306,9 @@ def weights_reader(meta_server_addr):
     # Build recv operations in round-robin order to match the sender's round-robin pattern
     # The sender uses nccl_build_send_ops which interleaves operations across ranks
     all_ranks = list(transfer_plan.operations.keys())  # Preserve plan's order
-    p2p_ops = nccl_build_recv_ops(parameters, transfer_plan, weights_update_group)
+    p2p_ops, non_contiguous_tensor_pairs, _recv_traj = nccl_build_recv_ops(
+        parameters, transfer_plan, weights_update_group
+    )
     logger.info(
         f"Reader (rank 0): Building recv operations from sender ranks: {all_ranks}"
     )
@@ -329,6 +331,10 @@ def weights_reader(meta_server_addr):
     # scheduling and stream assignment logic as the production reader.
     logger.info(f"Test reader: Executing {len(p2p_ops)} recv ops via batch_send_recv")
     batch_send_recv(send_ops=[], recv_ops=p2p_ops, blocking=True, use_group=True)
+    if non_contiguous_tensor_pairs:
+        with torch.no_grad():
+            for original_tensor, recv_tensor in non_contiguous_tensor_pairs:
+                original_tensor.copy_(recv_tensor)
     logger.info("All recv operations completed, synchronizing CUDA")
     device_util.synchronize(device_util.current_device())
     logger.info("Finished receiving weights")

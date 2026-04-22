@@ -20,15 +20,30 @@ import logging
 import os
 from typing import Any
 
-from fastapi import Request
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from vllm.entrypoints.openai.api_server import router
-from vllm.entrypoints.openai.protocol import OpenAIBaseModel
 
 from awex.config import InferenceConfig
 from awex.vllm_awex_adapter import AwexVLLMServerAdapter
 
 logger = logging.getLogger(__name__)
+
+# Newer vLLM moved OpenAIBaseModel and removed the shared module-level router.
+# Try new paths first, fall back to legacy.
+try:
+    from vllm.entrypoints.openai.engine.protocol import OpenAIBaseModel
+except ImportError:
+    from vllm.entrypoints.openai.protocol import OpenAIBaseModel
+
+try:
+    from vllm.entrypoints.openai.api_server import router  # type: ignore[attr-defined]
+
+    _USING_LEGACY_VLLM_ROUTER = True
+except ImportError:
+    router = APIRouter()
+    _USING_LEGACY_VLLM_ROUTER = False
+
+_awex_build_app_patched = False
 
 _awex_plugin_registered = False
 _AWEX_WORKER_METHODS = {
@@ -395,6 +410,42 @@ def flush_cache(self):
     return True
 
 
+def _ensure_router_attached() -> None:
+    """Attach ``router`` to vLLM's FastAPI app on newer vLLM releases.
+
+    Legacy vLLM picked up our routes automatically because we registered them
+    on the shared ``vllm.entrypoints.openai.api_server.router``. Newer vLLM
+    removed that shared router, so we patch ``build_app`` to include our local
+    router on every FastAPI app it constructs.
+    """
+    global _awex_build_app_patched
+    if _USING_LEGACY_VLLM_ROUTER or _awex_build_app_patched:
+        return
+    try:
+        from vllm.entrypoints.openai import api_server as _api_server_module
+    except ImportError as exc:
+        logger.warning("Cannot patch vLLM build_app for Awex routes: %s", exc)
+        return
+    original_build_app = getattr(_api_server_module, "build_app", None)
+    if original_build_app is None:
+        logger.warning(
+            "vLLM api_server has no build_app; Awex routes will not be attached."
+        )
+        return
+
+    def _awex_build_app(*args, **kwargs):
+        app = original_build_app(*args, **kwargs)
+        try:
+            app.include_router(router)
+            logger.info("Attached Awex router to vLLM FastAPI app.")
+        except Exception as exc:
+            logger.exception("Failed to attach Awex router to FastAPI app: %s", exc)
+        return app
+
+    _api_server_module.build_app = _awex_build_app
+    _awex_build_app_patched = True
+
+
 def register_awex_plugin() -> None:
     """Register Awex endpoints and worker patches for vLLM."""
     global _awex_plugin_registered
@@ -403,6 +454,7 @@ def register_awex_plugin() -> None:
     _awex_plugin_registered = True
 
     _patch_awex_worker()
+    _ensure_router_attached()
 
     @router.post("/areal_awex_init")
     async def awex_init(request: AwexInitRequest, raw_request: Request):
