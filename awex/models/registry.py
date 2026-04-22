@@ -104,7 +104,7 @@ ModelRegistry = _ModelRegistry(import_model_configs())
 
 def get_sharding_strategy(model_name: str):
     config = ModelRegistry.get_model_config(model_name)
-    return config.sharding_strategy
+    return _get_config_value(config, "sharding_strategy", ShardingStrategy)
 
 
 def _resolve_converter(
