@@ -16,9 +16,6 @@
 # under the License.
 
 from awex.config import InferenceConfig as InferenceConfig
-from awex.reader.nccl_reader import NCCLWorkerWeightsReader as NCCLWorkerWeightsReader
-from awex.reader.weights_reader import WeightsReader as WeightsReader
-from awex.writer.nccl_writer import NCCLWeightsWriter as NCCLWeightsWriter
 
 __all__ = [
     "InferenceConfig",
@@ -26,3 +23,19 @@ __all__ = [
     "WeightsReader",
     "NCCLWorkerWeightsReader",
 ]
+
+
+def __getattr__(name):
+    if name == "NCCLWeightsWriter":
+        from awex.writer.nccl_writer import NCCLWeightsWriter
+
+        return NCCLWeightsWriter
+    if name == "WeightsReader":
+        from awex.reader.weights_reader import WeightsReader
+
+        return WeightsReader
+    if name == "NCCLWorkerWeightsReader":
+        from awex.reader.nccl_reader import NCCLWorkerWeightsReader
+
+        return NCCLWorkerWeightsReader
+    raise AttributeError(f"module 'awex' has no attribute {name!r}")

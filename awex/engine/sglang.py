@@ -22,13 +22,17 @@ from awex import logging
 from awex.config import InferenceConfig
 from awex.engine.core import InferenceEngine
 from awex.reader.weights_reader import get_weights_exchange_reader
+from awex.sglang_patch import ensure_sglang_patched
 from awex.util.gpu import get_gpu_status
 
 logger = logging.getLogger(__name__)
 
+ensure_sglang_patched()
+
 
 class SGLangEngine(InferenceEngine):
     def __init__(self, config: Union[Dict[str, Any], InferenceConfig], sgl_engine):
+        ensure_sglang_patched()
         super().__init__(sgl_engine.tokenizer_manager.model_config)
         if isinstance(config, dict):
             config = InferenceConfig.from_dict(config)
@@ -140,6 +144,7 @@ class SGLangEngine(InferenceEngine):
             logger.info(f"GPU status after resume:\n{get_gpu_status()}")
 
     def execute_task_in_model_worker(self, fn, **kwargs):
+        ensure_sglang_patched()
         if not self._initialized:
             raise RuntimeError("Engine not initialized. Call `initialize` first.")
         if self.node_rank != 0:
@@ -159,6 +164,7 @@ class SGLangEngine(InferenceEngine):
 
 
 def extract_sgl_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    ensure_sglang_patched()
     from sglang.srt.server_args import ServerArgs
 
     engine_kwargs = {
