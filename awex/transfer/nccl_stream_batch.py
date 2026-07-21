@@ -35,6 +35,37 @@ from awex.util import device as device_util
 logger = logging.getLogger(__name__)
 hang_detector = ThreadPoolExecutor(max_workers=1)
 
+
+def _clone_p2p_send_tensor(tensor: torch.Tensor) -> torch.Tensor:
+    """Return a dense tensor suitable for torch.distributed P2P send."""
+    return tensor.clone(memory_format=torch.contiguous_format)
+
+
+def _prepare_p2p_recv_tensor(
+    tensor: torch.Tensor,
+) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
+    """Return a dense recv buffer and an optional copyback pair."""
+    if tensor.is_contiguous():
+        return tensor, None
+    recv_buffer = torch.empty(
+        tuple(tensor.shape),
+        dtype=tensor.dtype,
+        device=tensor.device,
+    )
+    return recv_buffer, (tensor, recv_buffer)
+
+
+@torch.no_grad()
+def _sync_p2p_recv_tensor_pairs(
+    recv_tensor_pairs: list[tuple[torch.Tensor, torch.Tensor]],
+) -> None:
+    if not recv_tensor_pairs:
+        return
+    for original_tensor, recv_buffer in recv_tensor_pairs:
+        original_tensor.copy_(recv_buffer)
+    recv_tensor_pairs.clear()
+
+
 class NcclColocateStreamBatchTransport:
     MAX_STREAMS = 64
 
@@ -113,6 +144,7 @@ class NcclColocateStreamBatchTransport:
         all_send_p2p_ops = {}  # peer_rank -> List[(plan_op, p2p_op)]
         all_recv_p2p_ops = {}  # peer_rank -> List[(plan_op, p2p_op)]
         tensors_to_copy = []
+        recv_tensor_pairs = []
         train_slice_context = {}
 
         # Process send operations
@@ -139,13 +171,15 @@ class NcclColocateStreamBatchTransport:
                     recv_rank = train_to_infer_device_mapping.get(
                         op.recv_rank, op.recv_rank
                     )
-                    cloned = tensor_sliced.clone()
+                    cloned = _clone_p2p_send_tensor(tensor_sliced)
                     # Wire-size parity with the receiver's dtype (see the
                     # chunked path / Problem 69: bf16 gate.weight into an fp32
                     # recv slot wedges the receiver forever).
                     recv_dtype = getattr(op.recv_shard_meta, "dtype", None)
                     if recv_dtype is not None and cloned.dtype != recv_dtype:
                         cloned = cloned.to(recv_dtype)
+                    if not cloned.is_contiguous():
+                        cloned = cloned.contiguous()
                     p2p_op = dist.P2POp(
                         dist.isend if async_op else dist.send,
                         cloned,
@@ -165,6 +199,9 @@ class NcclColocateStreamBatchTransport:
             for op in ops:
                 recv_tensor = recv_parameters[op.recv_shard_meta.name]
                 tensor_sliced = slice_tensor(recv_tensor, op, False)
+                tensor_sliced, copyback_pair = _prepare_p2p_recv_tensor(tensor_sliced)
+                if copyback_pair is not None:
+                    recv_tensor_pairs.append(copyback_pair)
                 p2p_op = dist.P2POp(
                     dist.irecv if async_op else dist.recv,
                     tensor_sliced,
@@ -209,6 +246,12 @@ class NcclColocateStreamBatchTransport:
         )
 
         device_util.synchronize()
+        if recv_tensor_pairs:
+            logger.info(
+                f"Syncing {len(recv_tensor_pairs)} non-contiguous recv buffers for {task_id}"
+            )
+            _sync_p2p_recv_tensor_pairs(recv_tensor_pairs)
+            device_util.synchronize()
         future.set_result(True)
         duration = time.time() - start_time
         logger.info(
@@ -476,6 +519,7 @@ class NcclColocateStreamBatchTransport:
         for op in local_self_recv_collected:
             recv_buf = recv_parameters[op.recv_shard_meta.name]
             recv_sliced = slice_tensor(recv_buf, op, False)
+            recv_sliced, copyback_pair = _prepare_p2p_recv_tensor(recv_sliced)
             actual_send_rank = train_to_infer_device_mapping.get(
                 op.send_rank, op.send_rank
             )
@@ -485,7 +529,9 @@ class NcclColocateStreamBatchTransport:
                 actual_send_rank,
                 group=weights_update_group,
             )
-            local_self_recv_built.append((actual_send_rank, op, p2p_op))
+            local_self_recv_built.append(
+                (actual_send_rank, op, p2p_op, copyback_pair)
+            )
 
         if len(tensors_to_copy) > 0:
             send_rank_for_self = infer_to_train_device_mapping[transfer_rank]
@@ -620,6 +666,7 @@ class NcclColocateStreamBatchTransport:
             )
             chunk_send_p2p_ops = {}
             chunk_recv_p2p_ops = {}
+            chunk_recv_tensor_pairs = []
             chunk_clone_bytes = 0
 
             for mapped_peer_rank, ops in send_per_peer.items():
@@ -635,7 +682,7 @@ class NcclColocateStreamBatchTransport:
                     recv_rank = train_to_infer_device_mapping.get(
                         op.recv_rank, op.recv_rank
                     )
-                    cloned = tensor_sliced.clone()
+                    cloned = _clone_p2p_send_tensor(tensor_sliced)
                     # Wire-size parity: the receiver posts irecv with ITS shard
                     # dtype. 961 plan ops (mlp.gate.weight, 124 edges) are bf16
                     # on the train side but fp32 on the sglang side; sending
@@ -645,6 +692,8 @@ class NcclColocateStreamBatchTransport:
                     recv_dtype = getattr(op.recv_shard_meta, "dtype", None)
                     if recv_dtype is not None and cloned.dtype != recv_dtype:
                         cloned = cloned.to(recv_dtype)
+                    if not cloned.is_contiguous():
+                        cloned = cloned.contiguous()
                     p2p_op = dist.P2POp(
                         dist.isend if async_op else dist.send,
                         cloned,
@@ -663,6 +712,11 @@ class NcclColocateStreamBatchTransport:
                 for op in sub:
                     recv_tensor = recv_parameters[op.recv_shard_meta.name]
                     tensor_sliced = slice_tensor(recv_tensor, op, False)
+                    tensor_sliced, copyback_pair = _prepare_p2p_recv_tensor(
+                        tensor_sliced
+                    )
+                    if copyback_pair is not None:
+                        chunk_recv_tensor_pairs.append(copyback_pair)
                     p2p_op = dist.P2POp(
                         dist.irecv if async_op else dist.recv,
                         tensor_sliced,
@@ -673,10 +727,12 @@ class NcclColocateStreamBatchTransport:
                 chunk_recv_p2p_ops[recv_from_rank] = p2p_ops
 
             if chunk_idx == 0 and local_self_recv_built:
-                for actual_send_rank, op, p2p_op in local_self_recv_built:
+                for actual_send_rank, op, p2p_op, copyback_pair in local_self_recv_built:
                     chunk_recv_p2p_ops.setdefault(actual_send_rank, []).append(
                         (op, p2p_op)
                     )
+                    if copyback_pair is not None:
+                        chunk_recv_tensor_pairs.append(copyback_pair)
 
             self.execute_recursive_partition_stream_transfer(
                 transfer_rank,
@@ -688,6 +744,13 @@ class NcclColocateStreamBatchTransport:
                 step_id,
             )
             device_util.synchronize()
+            if chunk_recv_tensor_pairs:
+                logger.info(
+                    f"[CHUNKED {task_id}] syncing {len(chunk_recv_tensor_pairs)} "
+                    f"non-contiguous recv buffers for chunk {chunk_idx}"
+                )
+                _sync_p2p_recv_tensor_pairs(chunk_recv_tensor_pairs)
+                device_util.synchronize()
             logger.warning(
                 f"[CHUNKED-DIAG {task_id}] chunk_idx={chunk_idx}/{n_chunks} EXIT "
                 f"send_peers={len(chunk_send_p2p_ops)} recv_peers={len(chunk_recv_p2p_ops)} "
@@ -696,6 +759,7 @@ class NcclColocateStreamBatchTransport:
 
             chunk_send_p2p_ops = None
             chunk_recv_p2p_ops = None
+            chunk_recv_tensor_pairs = None
             import gc as _gc
             _gc.collect()
             if hasattr(torch, "cuda") and torch.cuda.is_available():
