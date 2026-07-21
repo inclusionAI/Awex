@@ -153,7 +153,7 @@ def compute_statistics(stage_history: dict, step_id: int, duration: float, stage
     history.append(duration)
     if len(history) > 10000:
         history.pop(0)
-    if step_id == 2:
+    if step_id == 2 and len(history) > 1:
         # first step contains init time
         history.pop(history.index(max(history)))
     num_updates = len(history)
