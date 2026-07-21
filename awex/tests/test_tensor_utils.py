@@ -49,8 +49,9 @@ class TestGroupTensorsByShapeAndDtype:
         assert len(result_groups) == 1
         assert len(result_metadata) == 1
 
-        # Check that the group contains the original tensor
-        assert torch.equal(result_groups[0], tensor)
+        # Check that the group contains the original tensor's data
+        # (groups are flattened 1-D concatenations since grouping is by dtype)
+        assert torch.equal(result_groups[0], tensor.reshape(-1))
 
         # Check metadata
         metadata = result_metadata[0]
@@ -73,8 +74,10 @@ class TestGroupTensorsByShapeAndDtype:
         assert len(result_groups) == 1
         assert len(result_metadata) == 3
 
-        # Check that all tensors are concatenated in one group
-        expected_concatenated = torch.cat([tensor1, tensor2, tensor3], dim=0)
+        # Check that all tensors are concatenated (flattened) in one group
+        expected_concatenated = torch.cat(
+            [tensor1.reshape(-1), tensor2.reshape(-1), tensor3.reshape(-1)], dim=0
+        )
         assert torch.equal(result_groups[0], expected_concatenated)
 
         # Check metadata for each tensor
@@ -86,7 +89,7 @@ class TestGroupTensorsByShapeAndDtype:
             assert metadata["size"] == tensor1.numel()
 
     def test_tensors_different_shapes(self):
-        """Test function with tensors of different shapes."""
+        """Test function with tensors of different shapes (same dtype)."""
         tensor1 = torch.randn(2, 3, dtype=torch.float32)
         tensor2 = torch.randn(4, 5, dtype=torch.float32)
         tensor3 = torch.randn(2, 3, dtype=torch.float32)
@@ -94,21 +97,20 @@ class TestGroupTensorsByShapeAndDtype:
 
         result_groups, result_metadata = group_tensors_by_shape_and_dtype(tensors)
 
-        assert len(result_groups) == 2  # Two different shapes
+        # Grouping is by dtype only: mixed shapes share one flattened group
+        assert len(result_groups) == 1
         assert len(result_metadata) == 3
 
-        # Check that tensors with same shape are grouped together
-        # tensor1 and tensor3 should be in one group
-        # tensor2 should be in another group
-        shape_groups = {}
-        for metadata in result_metadata:
-            shape = metadata["shape"]
-            if shape not in shape_groups:
-                shape_groups[shape] = []
-            shape_groups[shape].append(metadata["original_index"])
+        # Per-entry metadata keeps the original shapes for reconstruction
+        shapes = {m["original_index"]: m["shape"] for m in result_metadata}
+        assert shapes[0] == torch.Size([2, 3])
+        assert shapes[1] == torch.Size([4, 5])
+        assert shapes[2] == torch.Size([2, 3])
 
-        assert set(shape_groups[torch.Size([2, 3])]) == {0, 2}
-        assert set(shape_groups[torch.Size([4, 5])]) == {1}
+        reconstructed = reconstruct_tensors_from_groups(result_groups, result_metadata)
+        assert torch.equal(reconstructed[0], tensor1)
+        assert torch.equal(reconstructed[1], tensor2)
+        assert torch.equal(reconstructed[2], tensor3)
 
     def test_tensors_different_dtypes(self):
         """Test function with tensors of different dtypes."""
@@ -163,7 +165,8 @@ class TestGroupTensorsByShapeAndDtype:
 
         result_groups, result_metadata = group_tensors_by_shape_and_dtype(tensors)
 
-        assert len(result_groups) == 2  # Two different shapes
+        # Grouping is by dtype only: all three share one flattened group
+        assert len(result_groups) == 1
         assert len(result_metadata) == 3
 
         # Verify reconstruction works correctly
