@@ -37,6 +37,18 @@ class BailingMoeShardingStrategy(ShardingStrategy):
     def get_sharding_strategy(self, parameter_name, **kwargs):
         if self.engine_name == "mcore":
             if "query_key_value" in parameter_name:
+                # convert_qkv_weight_along_tp_attention all-gathers qkv across
+                # the train attn-TP group, repacks it into the SGLang fused
+                # layout, then hands each rank only shards[attn_tp_rank] when
+                # attn_tp_size > 1 — the converted tensor is TP-sharded along
+                # dim 0, not replicated. Declaring NO_SHARDING here made every
+                # train rank a full replica whose declared extent covered only
+                # rows [0, N/tp), so the transfer plan generated ops for infer
+                # tp_rank 0 only and Lightning qkv on tp_rank > 0 stayed
+                # all-zero (P73).
+                attn_tp_size = self.rank_info.attn_tp_size
+                if attn_tp_size > 1:
+                    return ShardingType.TP_SHARDING, 0, attn_tp_size
                 return ShardingType.NO_SHARDING, 0, 1
         return super().get_sharding_strategy(parameter_name, **kwargs)
 
