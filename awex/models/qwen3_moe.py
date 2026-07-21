@@ -58,6 +58,17 @@ def _build_mcore_converter_qwen3_moe():
             hf = self.hf_config
             head_dim = self._gqa_head_dim()
             attn_tp = max(1, int(getattr(self.rank_info, "attn_tp_size", 1)))
+            if hf.num_key_value_heads % attn_tp != 0:
+                raise ValueError(
+                    f"num_key_value_heads ({hf.num_key_value_heads}) must be "
+                    f"divisible by attn_tp_size ({attn_tp})"
+                )
+            if hf.num_attention_heads % hf.num_key_value_heads != 0:
+                raise ValueError(
+                    f"num_attention_heads ({hf.num_attention_heads}) must be "
+                    f"divisible by num_key_value_heads "
+                    f"({hf.num_key_value_heads})"
+                )
             num_groups = hf.num_key_value_heads // attn_tp
             q_per_group = hf.num_attention_heads // hf.num_key_value_heads
             group_rows = (q_per_group + 2) * head_dim
