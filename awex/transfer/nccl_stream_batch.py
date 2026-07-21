@@ -173,8 +173,8 @@ class NcclColocateStreamBatchTransport:
                     )
                     cloned = _clone_p2p_send_tensor(tensor_sliced)
                     # Wire-size parity with the receiver's dtype (see the
-                    # chunked path / Problem 69: bf16 gate.weight into an fp32
-                    # recv slot wedges the receiver forever).
+                    # chunked path: a bf16 send into an fp32-sized recv
+                    # slot wedges the receiver forever).
                     recv_dtype = getattr(op.recv_shard_meta, "dtype", None)
                     if recv_dtype is not None and cloned.dtype != recv_dtype:
                         cloned = cloned.to(recv_dtype)
@@ -569,9 +569,11 @@ class NcclColocateStreamBatchTransport:
                 pass
             sliced_numel = 1
             try:
-                for s in (sample_op.train_slices or []):
-                    span = s.stop - s.start if s.stop is not None else 0
-                    sliced_numel *= max(span, 1)
+                for i, s in enumerate(sample_op.train_slices or []):
+                    dim_size = shape[i] if i < len(shape) else 1
+                    start = s.start if s.start is not None else 0
+                    stop = s.stop if s.stop is not None else dim_size
+                    sliced_numel *= max(stop - start, 1)
             except Exception:
                 sliced_numel = 1
                 for d in shape:
@@ -596,7 +598,7 @@ class NcclColocateStreamBatchTransport:
                 if dist.is_initialized():
                     t = torch.tensor(
                         [int(step_size)],
-                        device=device_util.current_device(),
+                        device=device_util.get_torch_device(),
                         dtype=torch.int64,
                     )
                     dist.all_reduce(
@@ -631,7 +633,7 @@ class NcclColocateStreamBatchTransport:
             if dist.is_initialized():
                 t = torch.tensor(
                     [int(n_chunks)],
-                    device=device_util.current_device(),
+                    device=device_util.get_torch_device(),
                     dtype=torch.int64,
                 )
                 dist.all_reduce(
@@ -684,11 +686,11 @@ class NcclColocateStreamBatchTransport:
                     )
                     cloned = _clone_p2p_send_tensor(tensor_sliced)
                     # Wire-size parity: the receiver posts irecv with ITS shard
-                    # dtype. 961 plan ops (mlp.gate.weight, 124 edges) are bf16
+                    # dtype. Some parameters (e.g. mlp.gate.weight) are bf16
                     # on the train side but fp32 on the sglang side; sending
                     # bf16 bytes into an fp32-sized recv leaves the receiver
-                    # waiting forever (deterministic chunk-7 deadlock,
-                    # Problem 69). Cast the clone to the receiver's dtype.
+                    # waiting forever (a deterministic mid-transfer deadlock).
+                    # Cast the clone to the receiver's dtype.
                     recv_dtype = getattr(op.recv_shard_meta, "dtype", None)
                     if recv_dtype is not None and cloned.dtype != recv_dtype:
                         cloned = cloned.to(recv_dtype)

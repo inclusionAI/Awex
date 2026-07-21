@@ -468,12 +468,12 @@ class NCCLWorkerWeightsReader(WorkerWeightsReader):
         # release the IPC-imported tensors. If that close lags past the train
         # side's release+empty_cache+realloc (train acts right after
         # weights_update_finished), the stale IPC mapping overlaps train's
-        # fresh allocations and either side faults at a drifting location
-        # (Problem 71: post-transfer IMA in reload / resume / first read).
+        # fresh allocations and either side faults with an illegal memory
+        # access at a drifting location (in reload, resume, or first read).
         # Force the close to complete BEFORE signalling the train side.
         self.deserialized_weights = None
         gc.collect()
-        torch.cuda.synchronize()
+        device_util.synchronize()
         duration = time.time() - start_time
         compute_statistics(
             self._history_update_weights_time,

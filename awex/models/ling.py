@@ -45,7 +45,7 @@ class BailingMoeShardingStrategy(ShardingStrategy):
                 # train rank a full replica whose declared extent covered only
                 # rows [0, N/tp), so the transfer plan generated ops for infer
                 # tp_rank 0 only and Lightning qkv on tp_rank > 0 stayed
-                # all-zero (P73).
+                # all-zero.
                 attn_tp_size = self.rank_info.attn_tp_size
                 if attn_tp_size > 1:
                     return ShardingType.TP_SHARDING, 0, attn_tp_size
