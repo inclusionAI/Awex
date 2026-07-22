@@ -20,8 +20,34 @@ from typing import List, Tuple
 import torch
 
 from awex import logging
+from awex.converter.sglang_converter import SGlangToHFWeightConverter
 
 logger = logging.getLogger(__name__)
+
+
+class SGlangToHFWeightConverterQwen3Moe(SGlangToHFWeightConverter):
+    """SGLang -> HF converter for Qwen3-MoE.
+
+    Splits the SGLang fused qkv_proj into canonical q/k/v projections
+    (GQA-aware split in the base class) so that inference-side weight
+    metadata matches the per-parameter HF names emitted by the Megatron
+    train-side converter. Expert parameters (experts.w13_weight /
+    experts.w2_weight) are expanded per expert by the base class.
+    """
+
+    def _fuse_qkv(self, name: str) -> bool:
+        # Train side reports canonical self_attn.{q,k,v}_proj names, so the
+        # inference side must unfuse qkv_proj for transfer-plan matching.
+        return False
+
+    def _convert_layer_norm_param(
+        self, name: str, parameter: torch.Tensor, layer_number: str
+    ) -> List[Tuple[str, torch.Tensor]]:
+        # Qwen3 uses self_attn.{q,k}_norm; the base class only recognizes
+        # the bailing-style {query,key}_layernorm names.
+        if "q_norm" in name or "k_norm" in name:
+            return [(name, parameter)]
+        return super()._convert_layer_norm_param(name, parameter, layer_number)
 
 
 def _build_mcore_converter_qwen3_moe():
@@ -48,9 +74,7 @@ def _build_mcore_converter_qwen3_moe():
             head_dim = getattr(self.hf_config, "head_dim", None)
             if head_dim:
                 return int(head_dim)
-            return int(
-                self.hf_config.hidden_size // self.hf_config.num_attention_heads
-            )
+            return int(self.hf_config.hidden_size // self.hf_config.num_attention_heads)
 
         def _split_gqa_qkv(
             self, parameter: torch.Tensor
@@ -82,9 +106,7 @@ def _build_mcore_converter_qwen3_moe():
                 )
             blocks = parameter.reshape(num_groups, group_rows, *parameter.shape[1:])
             q_rows = q_per_group * head_dim
-            q = blocks[:, :q_rows].reshape(
-                num_groups * q_rows, *parameter.shape[1:]
-            )
+            q = blocks[:, :q_rows].reshape(num_groups * q_rows, *parameter.shape[1:])
             k = blocks[:, q_rows : q_rows + head_dim].reshape(
                 num_groups * head_dim, *parameter.shape[1:]
             )
@@ -114,4 +136,5 @@ def _build_mcore_converter_qwen3_moe():
 CONFIG = {
     "model_name": "Qwen3MoeForCausalLM",
     "mcore_converter": _build_mcore_converter_qwen3_moe,
+    "sglang_converter": SGlangToHFWeightConverterQwen3Moe,
 }

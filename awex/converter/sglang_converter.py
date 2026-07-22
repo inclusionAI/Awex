@@ -122,27 +122,44 @@ class SGlangToHFWeightConverter:
                 # Keep fused format
                 return [(name, parameter)]
             else:
-                # Split into separate Q, K, V projections
+                # Split into separate Q, K, V projections. The fused dim0 is
+                # proportional to num_heads : num_kv_heads : num_kv_heads,
+                # which only degenerates to equal thirds for MHA — GQA models
+                # (num_kv_heads < num_heads) need head-count-weighted sizes.
+                # The ratio is TP-invariant since both head counts are divided
+                # by the same TP degree.
+                num_heads = int(self.total_num_heads)
+                num_kv_heads = int(self.total_kv_heads or num_heads)
+                total_units = num_heads + 2 * num_kv_heads
                 shape0 = parameter.shape[0]
-                stride = shape0 // 3
+                if (shape0 * num_heads) % total_units != 0 or (
+                    shape0 * num_kv_heads
+                ) % total_units != 0:
+                    raise ValueError(
+                        f"qkv dim0 {shape0} of {name} is not divisible into "
+                        f"q/k/v with num_heads={num_heads}, "
+                        f"num_kv_heads={num_kv_heads}"
+                    )
+                q_size = shape0 * num_heads // total_units
+                kv_size = shape0 * num_kv_heads // total_units
                 return [
                     (
                         name.replace("qkv_proj", "q_proj").replace(
                             "query_key_value", "q_proj"
                         ),
-                        parameter.narrow(0, 0, stride),
+                        parameter.narrow(0, 0, q_size),
                     ),
                     (
                         name.replace("qkv_proj", "k_proj").replace(
                             "query_key_value", "k_proj"
                         ),
-                        parameter.narrow(0, stride, stride),
+                        parameter.narrow(0, q_size, kv_size),
                     ),
                     (
                         name.replace("qkv_proj", "v_proj").replace(
                             "query_key_value", "v_proj"
                         ),
-                        parameter.narrow(0, 2 * stride, stride),
+                        parameter.narrow(0, q_size + kv_size, kv_size),
                     ),
                 ]
         elif "o_proj" in name or "dense" in name:

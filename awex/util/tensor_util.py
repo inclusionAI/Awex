@@ -350,6 +350,39 @@ def reconstruct_tensors_from_groups(
     return result_tensors
 
 
+@torch.no_grad()
+def reconstruct_ipc_weights(
+    serialized_weights: bytes,
+    ipc_backend: str = "cuda",
+    device_id=None,
+) -> Tuple[Dict[str, torch.Tensor], int]:
+    """Deserialize IPC-shared weight groups and rebuild the name->tensor map.
+
+    Shared by the colocate receive paths (NCCL reader and the SGLang
+    adapter): deserialize the pickled (groups, metadata, names) payload,
+    synchronize the device, and slice per-parameter tensors back out of the
+    dtype-grouped buffers.
+
+    Args:
+        serialized_weights: ForkingPickler payload produced by the sender.
+        ipc_backend: "cuda" for CUDA IPC handles; "cpu"/"npu" for
+            plain pickled tensors that must be moved to ``device_id``.
+        device_id: Target device for cpu/npu backends.
+
+    Returns:
+        Tuple of (name -> tensor mapping, number of shared groups).
+    """
+    if ipc_backend in ("cpu", "npu"):
+        group_shared, metadata, names = ipc_deserialize(serialized_weights)
+        group_shared = [t.to(device_id) for t in group_shared]
+    else:
+        group_shared, metadata, names = cuda_ipc_deserialize(serialized_weights)
+    device_util.synchronize(device_id=device_util.current_device())
+    tensors = reconstruct_tensors_from_groups(group_shared, metadata)
+    device_util.synchronize(device_id=device_util.current_device())
+    return dict(zip(names, tensors)), len(group_shared)
+
+
 def release_tensors(tensors: Union[Iterable[torch.Tensor], torch.Tensor]):
     if not isinstance(tensors, Iterable):
         tensors = [tensors]
