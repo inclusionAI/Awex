@@ -45,52 +45,6 @@ def _cfg_get(tf_config, key: str, default=None):
     return getattr(tf_config, key, default)
 
 
-def pack_fused_qkv_a_proj_for_tp(
-    q_proj: torch.Tensor,
-    kv_proj: torch.Tensor,
-    infer_tp_size: int,
-) -> torch.Tensor:
-    """Pack MLA q_a/kv_a full tensors in infer-TP local shard order.
-
-    SGLang's fused MLA parameter is consumed per TP rank as:
-    [q_local_rank_i ; kv_local_rank_i]
-
-    AWEX later applies generic TP chunking on dim 0, so the full writer-side
-    tensor must be laid out as:
-    [q_0 ; kv_0 ; q_1 ; kv_1 ; ...]
-    rather than [q_all ; kv_all].
-    """
-    if infer_tp_size <= 0:
-        raise ValueError(f"infer_tp_size must be positive, got {infer_tp_size}")
-    if q_proj.dim() != 2 or kv_proj.dim() != 2:
-        raise ValueError(
-            "Expected 2D MLA projection weights, got "
-            f"q_proj.dim={q_proj.dim()}, kv_proj.dim={kv_proj.dim()}"
-        )
-    if q_proj.shape[1] != kv_proj.shape[1]:
-        raise ValueError(
-            "MLA q/kv projection input dims must match, got "
-            f"q_proj.shape={tuple(q_proj.shape)}, kv_proj.shape={tuple(kv_proj.shape)}"
-        )
-    if q_proj.shape[0] % infer_tp_size != 0:
-        raise ValueError(
-            "MLA q projection rows must be divisible by infer_tp_size, got "
-            f"rows={q_proj.shape[0]}, infer_tp_size={infer_tp_size}"
-        )
-    if kv_proj.shape[0] % infer_tp_size != 0:
-        raise ValueError(
-            "MLA kv projection rows must be divisible by infer_tp_size, got "
-            f"rows={kv_proj.shape[0]}, infer_tp_size={infer_tp_size}"
-        )
-
-    q_shards = q_proj.chunk(infer_tp_size, dim=0)
-    kv_shards = kv_proj.chunk(infer_tp_size, dim=0)
-    return torch.cat(
-        [torch.cat([q_shards[i], kv_shards[i]], dim=0) for i in range(infer_tp_size)],
-        dim=0,
-    )
-
-
 def _normalize_pp_stage_layer_id_map(
     raw_map: Optional[Dict],
 ) -> Dict[Tuple[int, int], Dict[int, int]]:
@@ -887,25 +841,20 @@ class LinearMLAMcoreConverterMixin:
         if other_key not in layer_cache:
             return []
 
-        # P97 fix: pack_fused_qkv_a_proj_for_tp lays the fused MLA a_proj out in
-        # infer-TP interleaved order [q_0;kv_0;q_1;kv_1;...], which is ONLY
-        # correct when AWEX subsequently TP-chunks this param back into per-rank
-        # [q_i;kv_i] shards (train attn_tp>1 path). When megatron attn has NO TP
-        # (attn_tp_size==1) the param is resolved as NO_SHARDING: each sglang TP
-        # rank receives the FULL tensor uncut, so it must match sglang's own
-        # load_weights layout `torch.cat([q_a, kv_a], dim=0)` exactly. The
-        # interleave otherwise scrambles the rows (HF-groundtruth rel=1.086,
-        # logp_diff blows up at step2). Emit the plain [q_a;kv_a] concat here.
-        if self.rank_info.attn_tp_size == 1:
-            fused_tensor = torch.cat(
-                [layer_cache["q_a_proj"], layer_cache["kv_a_proj"]], dim=0
-            )
-        else:
-            fused_tensor = pack_fused_qkv_a_proj_for_tp(
-                layer_cache["q_a_proj"],
-                layer_cache["kv_a_proj"],
-                self.infer_atten_tp_size,
-            )
+        # LinearMLAShardingMixin.get_sharding_strategy() always declares
+        # ``attention.fused_qkv_a_proj_with_mqa.weight`` as NO_SHARDING, so the
+        # transfer plan ships the converted tensor UNCUT to every SGLang TP
+        # rank. The receiver's load_weights layout is the plain concatenation
+        # ``torch.cat([q_a, kv_a], dim=0)``; any infer-TP interleaved layout
+        # ([q_0;kv_0;q_1;kv_1;...]) scrambles
+        # rows for every recipient. Both inputs were already gathered to full
+        # tensors via get_full_tensor above, so the canonical concat is correct
+        # regardless of the train attn-TP size. Keep it unconditional unless
+        # the sharding metadata and transfer plan are changed to perform a
+        # real TP split of this parameter.
+        fused_tensor = torch.cat(
+            [layer_cache["q_a_proj"], layer_cache["kv_a_proj"]], dim=0
+        )
         del self.qkv_a_proj_cache[layer_number]
         return [("attention.fused_qkv_a_proj_with_mqa.weight", fused_tensor)]
 
@@ -1248,7 +1197,26 @@ def transform_mcore_qkv_bias(bias: torch.Tensor, tf_config: TransformerConfig):
     expected_compact_size = (each_query_size + 2 * each_kv_size) * total_num_kv_heads
     expected_replicated_size = 3 * hidden_size  # Q, K, V all have full hidden_size
 
-    if actual_size == expected_replicated_size:
+    if actual_size == expected_compact_size:
+        # Compact GQA/MHA interleaved format (Megatron default):
+        # [Q0,K0,V0, Q1,K1,V1, ...] chunked by num_kv_heads.
+        # Must check BEFORE replicated because MHA (num_heads == num_kv_heads)
+        # makes compact_size == replicated_size, and a fused QKV linear uses
+        # the same output-row ordering for weight and bias — this branch order
+        # mirrors transform_mcore_qkv_weight so both stay consistent.
+        query_list = []
+        key_list = []
+        value_list = []
+        for qkv in torch.chunk(bias, total_num_kv_heads, dim=0):
+            q, k, v = qkv.split([each_query_size, each_kv_size, each_kv_size], dim=0)
+            query_list.append(q)
+            key_list.append(k)
+            value_list.append(v)
+        # concat the query, key, value
+        all_query = torch.cat(query_list, dim=0)
+        all_key = torch.cat(key_list, dim=0)
+        all_value = torch.cat(value_list, dim=0)
+    elif actual_size == expected_replicated_size:
         # Replicated format: K and V are replicated to match query heads
         # Split into Q, K, V where each has size hidden_size
         q, k, v = bias.split([hidden_size, hidden_size, hidden_size], dim=0)
@@ -1270,21 +1238,6 @@ def transform_mcore_qkv_bias(bias: torch.Tensor, tf_config: TransformerConfig):
         all_key = torch.cat(k_unique, dim=0).reshape(-1)
         all_value = torch.cat(v_unique, dim=0).reshape(-1)
         all_query = q
-
-    elif actual_size == expected_compact_size:
-        # Compact GQA format: K and V have reduced size
-        query_list = []
-        key_list = []
-        value_list = []
-        for qkv in torch.chunk(bias, total_num_kv_heads, dim=0):
-            q, k, v = qkv.split([each_query_size, each_kv_size, each_kv_size], dim=0)
-            query_list.append(q)
-            key_list.append(k)
-            value_list.append(v)
-        # concat the query, key, value
-        all_query = torch.cat(query_list, dim=0)
-        all_key = torch.cat(key_list, dim=0)
-        all_value = torch.cat(value_list, dim=0)
     else:
         raise ValueError(
             f"QKV bias size mismatch - unsupported format:\n"
