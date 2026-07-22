@@ -651,7 +651,10 @@ class McoreToHFWeightConverter:
     ) -> Tuple[str, torch.Tensor]:
         """Convert bias parameters"""
         if "expert_bias" in name:
-            return ("mlp.gate.expert_bias", parameter.to(torch.bfloat16))
+            # SGLang keeps the auxiliary router expert bias in fp32 even when
+            # router matmul runs in bf16.  Downcasting here makes AWEX-loaded
+            # SGLang diverge from the native HF load at step 0.
+            return ("mlp.gate.expert_bias", parameter.to(torch.float32))
         else:
             raise NotImplementedError(f"Unsupported bias parameter name: {name}")
 
@@ -745,9 +748,22 @@ class LinearMLAMcoreConverterMixin:
         tf_config: TransformerConfig,
     ):
         super().__init__(hf_config, rank_info, infer_conf, tf_config=tf_config)
-        self.layer_group_size = int(_cfg_get(tf_config, "layer_group_size", 1) or 1)
-        self.linear_attn_norm_group_size = _cfg_get(
-            tf_config, "linear_attn_norm_group_size", None
+        # `layer_group_size` / `linear_attn_norm_group_size` are BailingMoeV2.5
+        # hybrid-attention params. AReaL's MegatronEngine does not inject them into
+        # the Megatron TransformerConfig, so fall back to the HF config (matching
+        # AReaL's own bailing_moe.py mapping: linear_attn_norm_group_size defaults
+        # to HF `group_norm_size`). Without this, layer_group_size stays 1 and every
+        # Lightning-attention layer is misrouted to the MLA path -> `linear_gate`
+        # raises "Unsupported parameter name".
+        self.layer_group_size = int(
+            _cfg_get(tf_config, "layer_group_size", None)
+            or getattr(hf_config, "layer_group_size", None)
+            or 1
+        )
+        self.linear_attn_norm_group_size = (
+            _cfg_get(tf_config, "linear_attn_norm_group_size", None)
+            or getattr(hf_config, "linear_attn_norm_group_size", None)
+            or getattr(hf_config, "group_norm_size", None)
         )
         self.fuse_qkv_a_proj = getattr(hf_config, "q_lora_rank", None) is not None
         self.qkv_a_proj_cache: Dict[str, Dict[str, torch.Tensor]] = {}
@@ -763,11 +779,15 @@ class LinearMLAMcoreConverterMixin:
         return (layer_number + 1) % self.layer_group_size != 0
 
     def _convert_g_norm_weight(self, parameter: torch.Tensor) -> torch.Tensor:
-        if not self.linear_attn_norm_group_size:
-            return parameter.clone().detach()
-        group_size = int(self.linear_attn_norm_group_size)
-        tp_size = max(int(self.rank_info.tp_size), 1)
-        return parameter.clone().detach().reshape(group_size // tp_size, -1)
+        # SGLang's BailingGroupRMSNormGate stores g_norm.weight as a flat 1D
+        # tensor [hidden_inner_size // tp_size] and applies grouping at runtime.
+        # The Megatron weight is also 1D; reshaping it to 2D here only added a
+        # leading dim (data order unchanged) and made the train-side metadata
+        # ndim (2) differ from the infer-side ndim (1), which crashed the AWEX
+        # transfer plan with `IndexError: tuple index out of range` in
+        # _build_region_communication_plan (Problem 38). Keep it 1D to match the
+        # SGLang canonical layout.
+        return parameter.clone().detach().reshape(-1)
 
     def _convert_lightning_attention_param(
         self, name: str, parameter: torch.Tensor, layer_number: str
@@ -775,6 +795,10 @@ class LinearMLAMcoreConverterMixin:
         if "self_attention.pre_gate_norm.te_norm.weight" in name:
             return []
         if "self_attention.pre_gate_norm.weight" in name:
+            return [("attention.g_norm.weight", self._convert_g_norm_weight(parameter))]
+        # BailingMoeV2.5 uses "gate_norm" instead of "pre_gate_norm" for
+        # the Lightning Attention gating normalization layer.
+        if "self_attention.gate_norm.weight" in name:
             return [("attention.g_norm.weight", self._convert_g_norm_weight(parameter))]
 
         name_mapping = {
@@ -817,6 +841,17 @@ class LinearMLAMcoreConverterMixin:
         if other_key not in layer_cache:
             return []
 
+        # LinearMLAShardingMixin.get_sharding_strategy() always declares
+        # ``attention.fused_qkv_a_proj_with_mqa.weight`` as NO_SHARDING, so the
+        # transfer plan ships the converted tensor UNCUT to every SGLang TP
+        # rank. The receiver's load_weights layout is the plain concatenation
+        # ``torch.cat([q_a, kv_a], dim=0)``; any infer-TP interleaved layout
+        # ([q_0;kv_0;q_1;kv_1;...]) scrambles
+        # rows for every recipient. Both inputs were already gathered to full
+        # tensors via get_full_tensor above, so the canonical concat is correct
+        # regardless of the train attn-TP size. Keep it unconditional unless
+        # the sharding metadata and transfer plan are changed to perform a
+        # real TP split of this parameter.
         fused_tensor = torch.cat(
             [layer_cache["q_a_proj"], layer_cache["kv_a_proj"]], dim=0
         )
@@ -855,9 +890,27 @@ class LinearMLAMcoreConverterMixin:
 
         return super()._convert_attention_param(name, parameter, layer_number)
 
+    # MLA-specific parameter name fragments that uniquely identify MLA layers,
+    # even when the global layer ID is unavailable (PP meta-resolution phase).
+    _MLA_PARAM_MARKERS = (
+        "linear_q_down_proj",
+        "linear_q_up_proj",
+        "linear_kv_down_proj",
+        "linear_kv_up_proj",
+        "linear_q_proj",
+    )
+
+    def _is_mla_param(self, name: str) -> bool:
+        return any(marker in name for marker in self._MLA_PARAM_MARKERS)
+
     def _convert_attention_param(
         self, name: str, parameter: torch.Tensor, layer_number: str
     ) -> List[Tuple[str, torch.Tensor]]:
+        # When PP stage layer ID map is unavailable (during meta resolution),
+        # local layer IDs may not reflect the true global position. Fall back
+        # to detecting layer type from the parameter name itself.
+        if self._is_mla_param(name):
+            return self._convert_mla_attention_param(name, parameter, layer_number)
         if self._is_linear_layer(int(layer_number)):
             return self._convert_lightning_attention_param(
                 name, parameter, layer_number
@@ -1001,7 +1054,23 @@ def transform_mcore_qkv_weight(weight: torch.Tensor, tf_config: TransformerConfi
         hidden_size * 2 + 2 * hidden_size
     )  # Q extends to 2, k v use hidden size
 
-    if actual_size == expected_replicated_size:
+    if actual_size == expected_compact_size:
+        # Compact GQA/MHA interleaved format (Megatron default):
+        # [Q0,K0,V0, Q1,K1,V1, ...] chunked by num_kv_heads.
+        # Must check BEFORE replicated because MHA (num_heads == num_kv_heads)
+        # makes compact_size == replicated_size.
+        query_list = []
+        key_list = []
+        value_list = []
+        for qkv in torch.chunk(weight, total_num_kv_heads, dim=0):
+            q, k, v = qkv.split([each_query_size, each_kv_size, each_kv_size], dim=0)
+            query_list.append(q)
+            key_list.append(k)
+            value_list.append(v)
+        all_query = torch.cat(query_list, dim=0)
+        all_key = torch.cat(key_list, dim=0)
+        all_value = torch.cat(value_list, dim=0)
+    elif actual_size == expected_replicated_size:
         # Replicated format: K and V are replicated to match query heads
         # Split into Q, K, V where each has size hidden_size
         q, k, v = weight.split([hidden_size, hidden_size, hidden_size], dim=0)
@@ -1023,21 +1092,6 @@ def transform_mcore_qkv_weight(weight: torch.Tensor, tf_config: TransformerConfi
         all_key = torch.cat(k_unique, dim=0).reshape(-1, k.shape[-1])
         all_value = torch.cat(v_unique, dim=0).reshape(-1, v.shape[-1])
         all_query = q
-
-    elif actual_size == expected_compact_size:
-        # Compact GQA format: K and V have reduced size
-        query_list = []
-        key_list = []
-        value_list = []
-        for qkv in torch.chunk(weight, total_num_kv_heads, dim=0):
-            q, k, v = qkv.split([each_query_size, each_kv_size, each_kv_size], dim=0)
-            query_list.append(q)
-            key_list.append(k)
-            value_list.append(v)
-        # concat the query, key, value
-        all_query = torch.cat(query_list, dim=0)
-        all_key = torch.cat(key_list, dim=0)
-        all_value = torch.cat(value_list, dim=0)
     elif actual_size == expected_qwen3_gqa_size:
         query_list = []
         key_list = []
@@ -1143,7 +1197,26 @@ def transform_mcore_qkv_bias(bias: torch.Tensor, tf_config: TransformerConfig):
     expected_compact_size = (each_query_size + 2 * each_kv_size) * total_num_kv_heads
     expected_replicated_size = 3 * hidden_size  # Q, K, V all have full hidden_size
 
-    if actual_size == expected_replicated_size:
+    if actual_size == expected_compact_size:
+        # Compact GQA/MHA interleaved format (Megatron default):
+        # [Q0,K0,V0, Q1,K1,V1, ...] chunked by num_kv_heads.
+        # Must check BEFORE replicated because MHA (num_heads == num_kv_heads)
+        # makes compact_size == replicated_size, and a fused QKV linear uses
+        # the same output-row ordering for weight and bias — this branch order
+        # mirrors transform_mcore_qkv_weight so both stay consistent.
+        query_list = []
+        key_list = []
+        value_list = []
+        for qkv in torch.chunk(bias, total_num_kv_heads, dim=0):
+            q, k, v = qkv.split([each_query_size, each_kv_size, each_kv_size], dim=0)
+            query_list.append(q)
+            key_list.append(k)
+            value_list.append(v)
+        # concat the query, key, value
+        all_query = torch.cat(query_list, dim=0)
+        all_key = torch.cat(key_list, dim=0)
+        all_value = torch.cat(value_list, dim=0)
+    elif actual_size == expected_replicated_size:
         # Replicated format: K and V are replicated to match query heads
         # Split into Q, K, V where each has size hidden_size
         q, k, v = bias.split([hidden_size, hidden_size, hidden_size], dim=0)
@@ -1165,21 +1238,6 @@ def transform_mcore_qkv_bias(bias: torch.Tensor, tf_config: TransformerConfig):
         all_key = torch.cat(k_unique, dim=0).reshape(-1)
         all_value = torch.cat(v_unique, dim=0).reshape(-1)
         all_query = q
-
-    elif actual_size == expected_compact_size:
-        # Compact GQA format: K and V have reduced size
-        query_list = []
-        key_list = []
-        value_list = []
-        for qkv in torch.chunk(bias, total_num_kv_heads, dim=0):
-            q, k, v = qkv.split([each_query_size, each_kv_size, each_kv_size], dim=0)
-            query_list.append(q)
-            key_list.append(k)
-            value_list.append(v)
-        # concat the query, key, value
-        all_query = torch.cat(query_list, dim=0)
-        all_key = torch.cat(key_list, dim=0)
-        all_value = torch.cat(value_list, dim=0)
     else:
         raise ValueError(
             f"QKV bias size mismatch - unsupported format:\n"

@@ -222,6 +222,7 @@ class NcclColocateTransport:
         )
 
 
+@torch.no_grad()
 def execute_tensors_to_copy(tensors_to_copy, copy_ops, recv_parameters, stage: str):
     start_time = time.time()
     num_ops = len(copy_ops)

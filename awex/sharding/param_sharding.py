@@ -267,7 +267,11 @@ class ShardingStrategy:
             return ShardingType.NO_SHARDING, 0, 1
         if "norm" in parameter_name:
             return ShardingType.NO_SHARDING, 0, 1
-        if "embedding" in parameter_name:
+        if "embedding" in parameter_name or "embed_tokens" in parameter_name:
+            # ``embed_tokens`` is the canonical HF name for the input embedding
+            # (mcore/sglang converters both normalize to it); it must inherit
+            # embedding sharding semantics even though it does not contain the
+            # literal substring "embedding".
             return self.get_embedding_sharding_strategy(parameter_name, **kwargs)
         if "lm_head" in parameter_name:
             return self.get_lm_head_sharding_strategy(parameter_name, **kwargs)

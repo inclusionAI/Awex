@@ -36,6 +36,36 @@ logger = logging.getLogger(__name__)
 hang_detector = ThreadPoolExecutor(max_workers=1)
 
 
+def _clone_p2p_send_tensor(tensor: torch.Tensor) -> torch.Tensor:
+    """Return a dense tensor suitable for torch.distributed P2P send."""
+    return tensor.clone(memory_format=torch.contiguous_format)
+
+
+def _prepare_p2p_recv_tensor(
+    tensor: torch.Tensor,
+) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
+    """Return a dense recv buffer and an optional copyback pair."""
+    if tensor.is_contiguous():
+        return tensor, None
+    recv_buffer = torch.empty(
+        tuple(tensor.shape),
+        dtype=tensor.dtype,
+        device=tensor.device,
+    )
+    return recv_buffer, (tensor, recv_buffer)
+
+
+@torch.no_grad()
+def _sync_p2p_recv_tensor_pairs(
+    recv_tensor_pairs: list[tuple[torch.Tensor, torch.Tensor]],
+) -> None:
+    if not recv_tensor_pairs:
+        return
+    for original_tensor, recv_buffer in recv_tensor_pairs:
+        original_tensor.copy_(recv_buffer)
+    recv_tensor_pairs.clear()
+
+
 class NcclColocateStreamBatchTransport:
     MAX_STREAMS = 64
 
@@ -82,12 +112,40 @@ class NcclColocateStreamBatchTransport:
             f"num_sends {num_sends}, num_recvs {num_recvs}"
         )
 
+        chunk_mb = int(os.environ.get("AWEX_CHUNK_MB", "0") or "0")
+
+        if chunk_mb > 0:
+            self._run_chunked(
+                task_id=task_id,
+                step_id=step_id,
+                train_to_infer_device_mapping=train_to_infer_device_mapping,
+                infer_to_train_device_mapping=infer_to_train_device_mapping,
+                transfer_rank=transfer_rank,
+                rank_coordinate=rank_coordinate,
+                world_size=world_size,
+                send_ops=send_ops,
+                recv_ops=recv_ops,
+                recv_transfer_plan=recv_transfer_plan,
+                weights_update_group=weights_update_group,
+                send_parameters=send_parameters,
+                recv_parameters=recv_parameters,
+                async_op=async_op,
+                chunk_bytes=chunk_mb * 1024 * 1024,
+            )
+            duration = time.time() - start_time
+            logger.info(
+                f"Finished CHUNKED weights update for {task_id}, took {duration:.4f}s "
+                f"(chunk_mb={chunk_mb})"
+            )
+            return
+
+        # === LEGACY PATH (one-shot clone-then-transfer) ===
         # Build P2P operations with sliced tensors
         all_send_p2p_ops = {}  # peer_rank -> List[(plan_op, p2p_op)]
         all_recv_p2p_ops = {}  # peer_rank -> List[(plan_op, p2p_op)]
         tensors_to_copy = []
+        recv_tensor_pairs = []
         train_slice_context = {}
-        non_contiguous_tensor_pairs = []
 
         # Process send operations
         for peer_rank, ops in send_ops.items():
@@ -113,9 +171,18 @@ class NcclColocateStreamBatchTransport:
                     recv_rank = train_to_infer_device_mapping.get(
                         op.recv_rank, op.recv_rank
                     )
+                    cloned = _clone_p2p_send_tensor(tensor_sliced)
+                    # Wire-size parity with the receiver's dtype (see the
+                    # chunked path: a bf16 send into an fp32-sized recv
+                    # slot wedges the receiver forever).
+                    recv_dtype = getattr(op.recv_shard_meta, "dtype", None)
+                    if recv_dtype is not None and cloned.dtype != recv_dtype:
+                        cloned = cloned.to(recv_dtype)
+                    if not cloned.is_contiguous():
+                        cloned = cloned.contiguous()
                     p2p_op = dist.P2POp(
                         dist.isend if async_op else dist.send,
-                        tensor_sliced.clone(),
+                        cloned,
                         recv_rank,
                         group=weights_update_group,
                     )
@@ -132,10 +199,9 @@ class NcclColocateStreamBatchTransport:
             for op in ops:
                 recv_tensor = recv_parameters[op.recv_shard_meta.name]
                 tensor_sliced = slice_tensor(recv_tensor, op, False)
-                if not tensor_sliced.is_contiguous():
-                    original_tensor = tensor_sliced
-                    tensor_sliced = tensor_sliced.contiguous()
-                    non_contiguous_tensor_pairs.append((original_tensor, tensor_sliced))
+                tensor_sliced, copyback_pair = _prepare_p2p_recv_tensor(tensor_sliced)
+                if copyback_pair is not None:
+                    recv_tensor_pairs.append(copyback_pair)
                 p2p_op = dist.P2POp(
                     dist.irecv if async_op else dist.recv,
                     tensor_sliced,
@@ -163,9 +229,12 @@ class NcclColocateStreamBatchTransport:
         msg = f"[{os.getpid()}] execute {total_send_ops} sends {total_recv_ops} recvs with recursive partition for {task_id}"
         hang_detector.submit(detect_hang, future, msg, [], timeout=60)
 
-        # Execute recursive partition transfer
-        # FIXME: batch_isend_irecv hang sometimes, seems `batch_isend_irecv` can't handle asymmetric p2p communication.
-        # so we use send/recv directly
+        # Recursive-partition butterfly with per-peer batch_isend_irecv (see
+        # _execute_ops_concurrent). The phase structure is symmetric and the
+        # data layer is verified fully consistent; the earlier deadlock was
+        # purely from submitting a whole half's ops in one batch. Issuing one
+        # batch per peer caps in-flight P2P at O(1) peer and stays
+        # deadlock-free.
         self.execute_recursive_partition_stream_transfer(
             transfer_rank,
             world_size,
@@ -175,13 +244,14 @@ class NcclColocateStreamBatchTransport:
             rank_coordinate,
             step_id,
         )
-        if non_contiguous_tensor_pairs:
-            with torch.no_grad():
-                for original_tensor, recv_tensor in non_contiguous_tensor_pairs:
-                    original_tensor.copy_(recv_tensor)
-                non_contiguous_tensor_pairs.clear()
-                del non_contiguous_tensor_pairs
+
         device_util.synchronize()
+        if recv_tensor_pairs:
+            logger.info(
+                f"Syncing {len(recv_tensor_pairs)} non-contiguous recv buffers for {task_id}"
+            )
+            _sync_p2p_recv_tensor_pairs(recv_tensor_pairs)
+            device_util.synchronize()
         future.set_result(True)
         duration = time.time() - start_time
         logger.info(
@@ -306,48 +376,430 @@ class NcclColocateStreamBatchTransport:
         Returns:
             Total number of ops executed
         """
-        # Collect ops from all peers that have operations, along with their peer_rank
-        peer_ops_with_rank = []
-        active_peer_ranks = []
-        for peer_rank in peer_ranks:
-            if peer_rank in ops_dict:
-                peer_ops_with_rank.append((peer_rank, ops_dict[peer_rank]))
-                active_peer_ranks.append(peer_rank)
-
-        if not peer_ops_with_rank:
-            return 0
-
-        # Allocate stream indices sequentially to active peer ranks for even distribution
-        # This ensures ranks are evenly distributed across available streams
-        peer_to_stream_idx = {}
-        for idx, peer_rank in enumerate(active_peer_ranks):
-            stream_idx = idx % len(self._stream_pool)
-            peer_to_stream_idx[peer_rank] = stream_idx
-
-        # Find the maximum number of ops across all peers
-        max_ops = max(len(ops) for _, ops in peer_ops_with_rank)
+        # Per-peer batch_isend_irecv. Submitting a WHOLE half's ops in one
+        # batch_isend_irecv (the previous behaviour) deadlocks at 32-rank /
+        # PP4->PP1 asymmetric scale: round 0's other-half has 16 peers and
+        # thousands of ops, and flooding NCCL with that many concurrent P2P
+        # channels exhausts them so the GPU drain never completes (data layer
+        # verified fully symmetric — the failure is purely runtime concurrency
+        # scale). Instead we walk peers in ascending rank order and issue ONE
+        # batch_isend_irecv per peer, capping in-flight P2P at O(1) peer.
+        #
+        # This is deadlock-free because a recursive-partition phase is
+        # single-direction: in phase 1 every first-half rank only SENDS and
+        # every second-half rank only RECVS (phase 2 is the mirror). A
+        # (sender, receiver) pair's per-peer batch is matched by NCCL group
+        # on (src, dst, group); serializing peers cannot form a wait cycle
+        # since no rank both sends and receives within the same phase. (This
+        # is exactly why recursive partition's symmetric phases are safe and
+        # the circle-shift directed ring was not.)
+        #
+        # Both sides must walk peers in the SAME (ascending) order so the
+        # k-th batch on a sender pairs with the corresponding recv on the
+        # receiver. peer_ranks is already an ascending range here.
+        trace = os.environ.get("AWEX_P2P_TRACE", "").strip() in ("1", "true", "True")
+        my_rank = self.transfer_rank
         total_ops = 0
-
-        # Execute ops in round-robin fashion: one op from each peer per iteration
-        # This allows concurrent execution across multiple peers
-        work_handles = []
-        for op_idx in range(max_ops):
-            for peer_rank, ops in peer_ops_with_rank:
-                if op_idx < len(ops):
-                    _, p2p_op = ops[op_idx]
-                    # Use the stream allocated to this peer to maintain ordering
-                    stream_idx = peer_to_stream_idx[peer_rank]
-                    stream = self._stream_pool[stream_idx]
-                    with device_util.stream(stream):
-                        result = p2p_op.op(
-                            p2p_op.tensor, p2p_op.peer, group=p2p_op.group
-                        )
-                        if p2p_op.op is dist.isend or p2p_op.op is dist.irecv:
-                            work_handles.append(result)
-                    total_ops += 1
-
-        # Wait for all async operations to complete
-        for work in work_handles:
-            work.wait()
-
+        for peer_rank in peer_ranks:
+            ops = ops_dict.get(peer_rank)
+            if not ops:
+                continue
+            p2p_ops = [p2p_op for _, p2p_op in ops]
+            if not p2p_ops:
+                continue
+            if trace:
+                logger.info(
+                    f"[P2P-TRACE rank={my_rank}] peer={peer_rank} "
+                    f"nops={len(p2p_ops)} -> batch_isend_irecv (pre-wait)"
+                )
+            works = dist.batch_isend_irecv(p2p_ops)
+            for work in works:
+                work.wait()
+            if trace:
+                logger.info(
+                    f"[P2P-TRACE rank={my_rank}] peer={peer_rank} "
+                    f"work.wait returned (enqueued) -> synchronize (waiting peer)"
+                )
+            # Force GPU completion before the next peer. work.wait() only
+            # blocks the CPU thread until the CUDA event records 'enqueued',
+            # not actual NCCL kernel completion; syncing per peer keeps
+            # in-flight P2P bounded to one peer and surfaces any hang at the
+            # offending peer rather than at a later chunk boundary.
+            if hasattr(torch, "cuda") and torch.cuda.is_available():
+                torch.cuda.synchronize()
+            if trace:
+                logger.info(
+                    f"[P2P-TRACE rank={my_rank}] peer={peer_rank} "
+                    f"synchronize done (drained peer)"
+                )
+            total_ops += len(p2p_ops)
         return total_ops
+
+    def _run_chunked(
+        self,
+        *,
+        task_id,
+        step_id,
+        train_to_infer_device_mapping,
+        infer_to_train_device_mapping,
+        transfer_rank,
+        rank_coordinate,
+        world_size,
+        send_ops,
+        recv_ops,
+        recv_transfer_plan,
+        weights_update_group,
+        send_parameters,
+        recv_parameters,
+        async_op,
+        chunk_bytes,
+    ):
+        """Chunked send/recv for AWEX colocation.
+
+        Cross-rank determinism: chunk N takes ops[N*step:(N+1)*step] from each
+        peer's per-peer ops list. plan_builder.build_local_transfer_plan
+        already sorts each peer's ops by (send_shard_meta.name, send_offset,
+        recv_offset) (transfer_plan.py:571), so rank A's send_ops[B] and rank
+        B's recv_ops[A] are aligned index-by-index. Same step_size on every
+        rank means matching send/recv pairs always land in the same chunk.
+        NCCL P2P pairs FIFO within (group, src, dst) so this preserves
+        protocol semantics.
+
+        step_size is derived from chunk_bytes by sampling the per-op nbytes
+        from a representative op so that one chunk's clones approach but do
+        not exceed chunk_bytes.
+
+        Local self-copy (tensors_to_copy) and self-recv-from-other-trains do
+        not consume clone memory and are emitted once up front.
+        """
+        train_slice_context = {}
+
+        local_train_rank = infer_to_train_device_mapping.get(transfer_rank)
+        tensors_to_copy = []
+        local_self_recv_collected = []
+
+        send_per_peer = {}
+        for peer_rank, ops in send_ops.items():
+            mapped_peer_rank = train_to_infer_device_mapping.get(peer_rank, peer_rank)
+            if mapped_peer_rank == transfer_rank:
+                for op in ops:
+                    op_send_rank = getattr(op, "send_rank", None)
+                    if (
+                        local_train_rank is not None
+                        and op_send_rank is not None
+                        and op_send_rank != local_train_rank
+                    ):
+                        local_self_recv_collected.append(op)
+                    else:
+                        if op.send_shard_meta.name not in send_parameters:
+                            raise KeyError(op.send_shard_meta.name)
+                        send_tensor = send_parameters[op.send_shard_meta.name]
+                        tensor_sliced = slice_tensor(
+                            send_tensor, op, True, slice_context=train_slice_context
+                        )
+                        tensors_to_copy.append(tensor_sliced)
+            else:
+                missing = [
+                    op.send_shard_meta.name
+                    for op in ops
+                    if op.send_shard_meta.name not in send_parameters
+                ]
+                if missing:
+                    raise KeyError(missing[0])
+                send_per_peer[mapped_peer_rank] = list(ops)
+
+        recv_per_peer = {}
+        for send_rank, ops in recv_ops.items():
+            recv_from_rank = train_to_infer_device_mapping[send_rank]
+            if recv_from_rank == transfer_rank:
+                continue
+            recv_per_peer[recv_from_rank] = list(ops)
+
+        local_self_recv_built = []
+        for op in local_self_recv_collected:
+            recv_buf = recv_parameters[op.recv_shard_meta.name]
+            recv_sliced = slice_tensor(recv_buf, op, False)
+            recv_sliced, copyback_pair = _prepare_p2p_recv_tensor(recv_sliced)
+            actual_send_rank = train_to_infer_device_mapping.get(
+                op.send_rank, op.send_rank
+            )
+            p2p_op = dist.P2POp(
+                dist.irecv,
+                recv_sliced,
+                actual_send_rank,
+                group=weights_update_group,
+            )
+            local_self_recv_built.append(
+                (actual_send_rank, op, p2p_op, copyback_pair)
+            )
+
+        if len(tensors_to_copy) > 0:
+            send_rank_for_self = infer_to_train_device_mapping[transfer_rank]
+            execute_tensors_to_copy(
+                tensors_to_copy,
+                recv_transfer_plan.operations[send_rank_for_self],
+                recv_parameters,
+                f"tensor copy for {task_id}",
+            )
+        else:
+            logger.info(f"No tensors to copy for {task_id}")
+        # The self-copy phase is done; release its densified slice cache so the
+        # staging copies don't stay alive for the rest of the chunked transfer.
+        tensors_to_copy = None
+        train_slice_context.clear()
+
+        def _op_wire_bytes(op) -> int:
+            # Wire dtype is the receiver's dtype: send clones are cast to
+            # op.recv_shard_meta.dtype before posting (see the chunk loop
+            # below), so fp32 receivers cost 2x a bf16 train-side estimate.
+            dtype = getattr(op.recv_shard_meta, "dtype", None) or getattr(
+                op.send_shard_meta, "dtype", None
+            )
+            elem_size = 2
+            if dtype is not None:
+                try:
+                    elem_size = int(dtype.itemsize)
+                except (AttributeError, TypeError):
+                    try:
+                        elem_size = torch.empty((), dtype=dtype).element_size()
+                    except (TypeError, RuntimeError):
+                        pass
+            overlap_shape = getattr(op, "overlap_shape", None)
+            if overlap_shape:
+                numel = 1
+                for d in overlap_shape:
+                    numel *= max(int(d), 1)
+                return max(numel * elem_size, 1)
+            shape = op.send_shard_meta.shape
+            numel = 1
+            try:
+                for i, s in enumerate(op.train_slices or []):
+                    dim_size = shape[i] if i < len(shape) else 1
+                    start = s.start if s.start is not None else 0
+                    stop = s.stop if s.stop is not None else dim_size
+                    numel *= max(stop - start, 1)
+            except (TypeError, IndexError):
+                numel = 1
+                for d in shape:
+                    numel *= d
+            return max(numel * elem_size, 1)
+
+        # AWEX_CHUNK_MB bounds the transient allocation of ONE chunk across
+        # ALL peers: chunk N clones send ops[N*step:(N+1)*step] for every
+        # send peer and stages non-contiguous recvs for every recv peer.
+        # The budget must therefore be divided by the AGGREGATE per-index
+        # wire bytes summed over peers, not a single peer's sample op —
+        # with 16 active peers the sample-op estimate would allocate ~16x
+        # the requested budget.
+        all_peer_ops = list(send_per_peer.values()) + list(recv_per_peer.values())
+        max_len = max((len(ops) for ops in all_peer_ops), default=0)
+        max_index_bytes = 0
+        for idx in range(max_len):
+            agg = sum(
+                _op_wire_bytes(ops[idx]) for ops in all_peer_ops if idx < len(ops)
+            )
+            max_index_bytes = max(max_index_bytes, agg)
+
+        if max_index_bytes == 0:
+            step_size = 1
+        else:
+            step_size = max(1, chunk_bytes // max_index_bytes)
+            logger.info(
+                f"[CHUNKED {task_id}] max_aggregate_bytes_per_index={max_index_bytes} "
+                f"chunk_bytes={chunk_bytes} step_size_local={step_size}"
+            )
+
+        env_force = os.environ.get("AWEX_CHUNK_OPS", "").strip()
+        if env_force:
+            try:
+                forced = max(1, int(env_force))
+                step_size = forced
+                logger.info(f"[CHUNKED {task_id}] AWEX_CHUNK_OPS override={forced}")
+            except ValueError:
+                pass
+        else:
+            try:
+                if dist.is_initialized():
+                    t = torch.tensor(
+                        [int(step_size)],
+                        device=device_util.get_torch_device(),
+                        dtype=torch.int64,
+                    )
+                    dist.all_reduce(
+                        t, op=dist.ReduceOp.MIN, group=weights_update_group
+                    )
+                    new_step = int(t.item())
+                    if new_step != step_size:
+                        logger.info(
+                            f"[CHUNKED {task_id}] step_size aligned via all_reduce "
+                            f"local={step_size} -> global_min={new_step}"
+                        )
+                    step_size = max(1, new_step)
+            except Exception as e:
+                logger.warning(
+                    f"[CHUNKED {task_id}] step_size all_reduce failed: {e}; "
+                    f"using local={step_size} (risk of cross-rank chunk drift)"
+                )
+
+        max_send_len = max((len(v) for v in send_per_peer.values()), default=0)
+        max_recv_len = max((len(v) for v in recv_per_peer.values()), default=0)
+        n_chunks = max(
+            1,
+            (max(max_send_len, max_recv_len) + step_size - 1) // step_size,
+        )
+        # n_chunks must be globally consistent; otherwise ranks with fewer
+        # chunks exit the loop early and the others hang in batch_isend_irecv
+        # waiting for peers that already left. step_size is already MIN-reduced
+        # above, but n_chunks depends on per-rank max_send/recv lengths which
+        # diverge across ranks. Take MAX to ensure every rank runs the same
+        # number of chunk iterations (empty chunks are no-ops).
+        try:
+            if dist.is_initialized():
+                t = torch.tensor(
+                    [int(n_chunks)],
+                    device=device_util.get_torch_device(),
+                    dtype=torch.int64,
+                )
+                dist.all_reduce(
+                    t, op=dist.ReduceOp.MAX, group=weights_update_group
+                )
+                new_n = int(t.item())
+                if new_n != n_chunks:
+                    logger.info(
+                        f"[CHUNKED {task_id}] n_chunks aligned via all_reduce "
+                        f"local={n_chunks} -> global_max={new_n}"
+                    )
+                    n_chunks = new_n
+        except Exception as e:
+            logger.warning(
+                f"[CHUNKED {task_id}] n_chunks all_reduce failed: {e}; "
+                f"using local={n_chunks} (risk of cross-rank chunk drift / hang)"
+            )
+        logger.info(
+            f"[CHUNKED {task_id}] n_chunks={n_chunks} step_size={step_size} "
+            f"max_send_per_peer={max_send_len} max_recv_per_peer={max_recv_len}"
+        )
+
+        total_clone_bytes = 0
+
+        for chunk_idx in range(n_chunks):
+            start = chunk_idx * step_size
+            end = start + step_size
+
+            logger.warning(
+                f"[CHUNKED-DIAG {task_id}] chunk_idx={chunk_idx}/{n_chunks} ENTER "
+                f"slice=[{start},{end})"
+            )
+            chunk_send_p2p_ops = {}
+            chunk_recv_p2p_ops = {}
+            chunk_recv_tensor_pairs = []
+            chunk_clone_bytes = 0
+            # Per-chunk slice cache: dedupes densified non-contiguous send
+            # slices WITHIN a chunk but is dropped at the chunk boundary, so
+            # dense staging copies do not accumulate across the whole
+            # transfer (which would defeat the AWEX_CHUNK_MB budget).
+            chunk_slice_context = {}
+
+            for mapped_peer_rank, ops in send_per_peer.items():
+                sub = ops[start:end]
+                if not sub:
+                    continue
+                p2p_ops = []
+                for op in sub:
+                    send_tensor = send_parameters[op.send_shard_meta.name]
+                    tensor_sliced = slice_tensor(
+                        send_tensor, op, True, slice_context=chunk_slice_context
+                    )
+                    recv_rank = train_to_infer_device_mapping.get(
+                        op.recv_rank, op.recv_rank
+                    )
+                    cloned = _clone_p2p_send_tensor(tensor_sliced)
+                    # Wire-size parity: the receiver posts irecv with ITS shard
+                    # dtype. Some parameters (e.g. mlp.gate.weight) are bf16
+                    # on the train side but fp32 on the sglang side; sending
+                    # bf16 bytes into an fp32-sized recv leaves the receiver
+                    # waiting forever (a deterministic mid-transfer deadlock).
+                    # Cast the clone to the receiver's dtype.
+                    recv_dtype = getattr(op.recv_shard_meta, "dtype", None)
+                    if recv_dtype is not None and cloned.dtype != recv_dtype:
+                        cloned = cloned.to(recv_dtype)
+                    if not cloned.is_contiguous():
+                        cloned = cloned.contiguous()
+                    p2p_op = dist.P2POp(
+                        dist.isend if async_op else dist.send,
+                        cloned,
+                        recv_rank,
+                        group=weights_update_group,
+                    )
+                    p2p_ops.append((op, p2p_op))
+                    chunk_clone_bytes += cloned.numel() * cloned.element_size()
+                chunk_send_p2p_ops[mapped_peer_rank] = p2p_ops
+
+            for recv_from_rank, ops in recv_per_peer.items():
+                sub = ops[start:end]
+                if not sub:
+                    continue
+                p2p_ops = []
+                for op in sub:
+                    recv_tensor = recv_parameters[op.recv_shard_meta.name]
+                    tensor_sliced = slice_tensor(recv_tensor, op, False)
+                    tensor_sliced, copyback_pair = _prepare_p2p_recv_tensor(
+                        tensor_sliced
+                    )
+                    if copyback_pair is not None:
+                        chunk_recv_tensor_pairs.append(copyback_pair)
+                    p2p_op = dist.P2POp(
+                        dist.irecv if async_op else dist.recv,
+                        tensor_sliced,
+                        recv_from_rank,
+                        group=weights_update_group,
+                    )
+                    p2p_ops.append((op, p2p_op))
+                chunk_recv_p2p_ops[recv_from_rank] = p2p_ops
+
+            if chunk_idx == 0 and local_self_recv_built:
+                for actual_send_rank, op, p2p_op, copyback_pair in local_self_recv_built:
+                    chunk_recv_p2p_ops.setdefault(actual_send_rank, []).append(
+                        (op, p2p_op)
+                    )
+                    if copyback_pair is not None:
+                        chunk_recv_tensor_pairs.append(copyback_pair)
+
+            self.execute_recursive_partition_stream_transfer(
+                transfer_rank,
+                world_size,
+                chunk_send_p2p_ops,
+                chunk_recv_p2p_ops,
+                weights_update_group,
+                rank_coordinate,
+                step_id,
+            )
+            device_util.synchronize()
+            if chunk_recv_tensor_pairs:
+                logger.info(
+                    f"[CHUNKED {task_id}] syncing {len(chunk_recv_tensor_pairs)} "
+                    f"non-contiguous recv buffers for chunk {chunk_idx}"
+                )
+                _sync_p2p_recv_tensor_pairs(chunk_recv_tensor_pairs)
+                device_util.synchronize()
+            logger.warning(
+                f"[CHUNKED-DIAG {task_id}] chunk_idx={chunk_idx}/{n_chunks} EXIT "
+                f"send_peers={len(chunk_send_p2p_ops)} recv_peers={len(chunk_recv_p2p_ops)} "
+                f"clone_mb={chunk_clone_bytes/1024/1024:.1f}"
+            )
+
+            chunk_send_p2p_ops = None
+            chunk_recv_p2p_ops = None
+            chunk_recv_tensor_pairs = None
+            chunk_slice_context = None
+            import gc as _gc
+            _gc.collect()
+            if hasattr(torch, "cuda") and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            total_clone_bytes += chunk_clone_bytes
+
+        logger.info(
+            f"CHUNKED transfer done {task_id}: chunks={n_chunks} step_size={step_size} "
+            f"total_clone_mb={total_clone_bytes / 1024 / 1024:.2f}"
+        )

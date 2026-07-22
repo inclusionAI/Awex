@@ -99,7 +99,17 @@ class SGlangToHFWeightConverterBailingMoeLinear(
     LinearMLASGlangConverterMixin,
     SGlangToHFWeightConverter,
 ):
-    pass
+    def convert_param(
+        self, name: str, parameter: torch.Tensor
+    ) -> List[Tuple[str, torch.Tensor]]:
+        # SGLang's BailingMoe names the input embedding ``word_embeddings``,
+        # while the canonical HF name (and the train-side mcore converter output)
+        # is ``embed_tokens``. Normalize here so the transfer-plan key sets on
+        # both sides align; the base converter has no rule for ``word_embeddings``
+        # and would otherwise pass it through unchanged.
+        if name == "model.word_embeddings.weight":
+            name = "model.embed_tokens.weight"
+        return super().convert_param(name, parameter)
 
 
 CONFIG = [
