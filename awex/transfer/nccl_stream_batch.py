@@ -543,45 +543,69 @@ class NcclColocateStreamBatchTransport:
             )
         else:
             logger.info(f"No tensors to copy for {task_id}")
+        # The self-copy phase is done; release its densified slice cache so the
+        # staging copies don't stay alive for the rest of the chunked transfer.
+        tensors_to_copy = None
+        train_slice_context.clear()
 
-        sample_op = None
-        for peer_rank in sorted(send_per_peer.keys()):
-            ops = send_per_peer[peer_rank]
-            if ops:
-                sample_op = ops[0]
-                break
-        if sample_op is None:
-            for peer_rank in sorted(recv_per_peer.keys()):
-                ops = recv_per_peer[peer_rank]
-                if ops:
-                    sample_op = ops[0]
-                    break
-
-        if sample_op is None:
-            step_size = 1
-        else:
-            shape = sample_op.send_shard_meta.shape
+        def _op_wire_bytes(op) -> int:
+            # Wire dtype is the receiver's dtype: send clones are cast to
+            # op.recv_shard_meta.dtype before posting (see the chunk loop
+            # below), so fp32 receivers cost 2x a bf16 train-side estimate.
+            dtype = getattr(op.recv_shard_meta, "dtype", None) or getattr(
+                op.send_shard_meta, "dtype", None
+            )
             elem_size = 2
+            if dtype is not None:
+                try:
+                    elem_size = int(dtype.itemsize)
+                except (AttributeError, TypeError):
+                    try:
+                        elem_size = torch.empty((), dtype=dtype).element_size()
+                    except (TypeError, RuntimeError):
+                        pass
+            overlap_shape = getattr(op, "overlap_shape", None)
+            if overlap_shape:
+                numel = 1
+                for d in overlap_shape:
+                    numel *= max(int(d), 1)
+                return max(numel * elem_size, 1)
+            shape = op.send_shard_meta.shape
+            numel = 1
             try:
-                from awex.util.tensor_util import dtype_to_size as _dtype_size
-                elem_size = _dtype_size(sample_op.send_shard_meta.dtype)
-            except Exception:
-                pass
-            sliced_numel = 1
-            try:
-                for i, s in enumerate(sample_op.train_slices or []):
+                for i, s in enumerate(op.train_slices or []):
                     dim_size = shape[i] if i < len(shape) else 1
                     start = s.start if s.start is not None else 0
                     stop = s.stop if s.stop is not None else dim_size
-                    sliced_numel *= max(stop - start, 1)
-            except Exception:
-                sliced_numel = 1
+                    numel *= max(stop - start, 1)
+            except (TypeError, IndexError):
+                numel = 1
                 for d in shape:
-                    sliced_numel *= d
-            per_op_bytes = max(sliced_numel * elem_size, 1)
-            step_size = max(1, chunk_bytes // per_op_bytes)
+                    numel *= d
+            return max(numel * elem_size, 1)
+
+        # AWEX_CHUNK_MB bounds the transient allocation of ONE chunk across
+        # ALL peers: chunk N clones send ops[N*step:(N+1)*step] for every
+        # send peer and stages non-contiguous recvs for every recv peer.
+        # The budget must therefore be divided by the AGGREGATE per-index
+        # wire bytes summed over peers, not a single peer's sample op —
+        # with 16 active peers the sample-op estimate would allocate ~16x
+        # the requested budget.
+        all_peer_ops = list(send_per_peer.values()) + list(recv_per_peer.values())
+        max_len = max((len(ops) for ops in all_peer_ops), default=0)
+        max_index_bytes = 0
+        for idx in range(max_len):
+            agg = sum(
+                _op_wire_bytes(ops[idx]) for ops in all_peer_ops if idx < len(ops)
+            )
+            max_index_bytes = max(max_index_bytes, agg)
+
+        if max_index_bytes == 0:
+            step_size = 1
+        else:
+            step_size = max(1, chunk_bytes // max_index_bytes)
             logger.info(
-                f"[CHUNKED {task_id}] local sample shape={shape} per_op_bytes={per_op_bytes} "
+                f"[CHUNKED {task_id}] max_aggregate_bytes_per_index={max_index_bytes} "
                 f"chunk_bytes={chunk_bytes} step_size_local={step_size}"
             )
 
@@ -670,6 +694,11 @@ class NcclColocateStreamBatchTransport:
             chunk_recv_p2p_ops = {}
             chunk_recv_tensor_pairs = []
             chunk_clone_bytes = 0
+            # Per-chunk slice cache: dedupes densified non-contiguous send
+            # slices WITHIN a chunk but is dropped at the chunk boundary, so
+            # dense staging copies do not accumulate across the whole
+            # transfer (which would defeat the AWEX_CHUNK_MB budget).
+            chunk_slice_context = {}
 
             for mapped_peer_rank, ops in send_per_peer.items():
                 sub = ops[start:end]
@@ -679,7 +708,7 @@ class NcclColocateStreamBatchTransport:
                 for op in sub:
                     send_tensor = send_parameters[op.send_shard_meta.name]
                     tensor_sliced = slice_tensor(
-                        send_tensor, op, True, slice_context=train_slice_context
+                        send_tensor, op, True, slice_context=chunk_slice_context
                     )
                     recv_rank = train_to_infer_device_mapping.get(
                         op.recv_rank, op.recv_rank
@@ -762,6 +791,7 @@ class NcclColocateStreamBatchTransport:
             chunk_send_p2p_ops = None
             chunk_recv_p2p_ops = None
             chunk_recv_tensor_pairs = None
+            chunk_slice_context = None
             import gc as _gc
             _gc.collect()
             if hasattr(torch, "cuda") and torch.cuda.is_available():
