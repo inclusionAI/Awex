@@ -223,7 +223,7 @@ class InferParamMetaResolver(ParamMetaResolver):
                     params.append((hf_name, hf_param))
             else:
                 params.append((name, param))
-        if convert_params and engine_name == "vllm":
+        if convert_params:
             hf_config = getattr(model, "config", None) or getattr(
                 model_context, "hf_config", None
             )
@@ -242,10 +242,16 @@ class InferParamMetaResolver(ParamMetaResolver):
                             embed_tensor = p
                             break
                     if embed_tensor is not None:
-                        # vLLM ties output weights to embeddings, but does not expose lm_head.
+                        # Both engines tie the output weights to the embedding
+                        # and expose no lm_head, while the training side still
+                        # publishes it. The reader adds the same alias, so the
+                        # metadata has to match or the transfer plan reports a
+                        # missing key.
                         params.append(("lm_head.weight", embed_tensor))
                         logger.info(
-                            "Infer meta: added lm_head.weight alias for tied embeddings in vLLM"
+                            "Infer meta: added lm_head.weight alias for tied "
+                            "embeddings on %s",
+                            engine_name,
                         )
         if os.environ.get("AWEX_DEBUG_INFER_META", "0") == "1":
             names = [n for n, _ in params]
