@@ -23,7 +23,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from torch import distributed as dist
 from transformers import PretrainedConfig
 
-from awex.meta.meta_resolver import ParamMetaResolver, logger
+from awex.meta.meta_resolver import (
+    ParamMetaResolver,
+    get_num_hidden_layers,
+    logger,
+)
 from awex.meta.weight_meta import (
     ParameterMeta,
     compute_total_model_size,
@@ -62,7 +66,7 @@ class McoreParamMetaResolver(ParamMetaResolver):
         rank = self._rank_info.global_rank
         self._infer_conf = infer_conf
         self.infer_hf_config = infer_conf["hf_config"]
-        self.num_hidden_layers = self.infer_hf_config.num_hidden_layers
+        self.num_hidden_layers = get_num_hidden_layers(self.infer_hf_config)
         self._pp_stage_layer_id_map: Dict[Tuple[int, int], Dict[int, int]] = {}
         # yyyy_mm_dd_hh_mm_ss
         suffix = (

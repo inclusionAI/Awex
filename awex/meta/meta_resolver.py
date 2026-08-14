@@ -33,6 +33,26 @@ from awex.sharding.rank_info import RankInfo
 logger = logging.getLogger(__name__)
 
 
+def get_num_hidden_layers(hf_config) -> int:
+    """Resolve decoder depth from flat or composite Hugging Face configs."""
+
+    def _get_value(config, name):
+        if isinstance(config, dict):
+            return config.get(name)
+        return getattr(config, name, None)
+
+    num_hidden_layers = _get_value(hf_config, "num_hidden_layers")
+    if num_hidden_layers is None:
+        text_config = _get_value(hf_config, "text_config")
+        num_hidden_layers = _get_value(text_config, "num_hidden_layers")
+    if num_hidden_layers is None:
+        raise AttributeError(
+            "Hugging Face config must define num_hidden_layers either at the "
+            "top level or under text_config"
+        )
+    return int(num_hidden_layers)
+
+
 class ParamMetaResolver(ABC):
     """
     Resolves and reconstructs parameter metadata for a distributed model, including sharding and replica information.
@@ -40,7 +60,7 @@ class ParamMetaResolver(ABC):
 
     def __init__(self, hf_config):
         self.hf_config = hf_config
-        self.num_hidden_layers = hf_config.num_hidden_layers
+        self.num_hidden_layers = get_num_hidden_layers(hf_config)
 
     @abstractmethod
     def get_model_arch_name(self) -> str:
