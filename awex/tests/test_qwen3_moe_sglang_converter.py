@@ -30,6 +30,7 @@ import torch
 
 from awex.models.qwen3_moe import SGlangToHFWeightConverterQwen3Moe
 from awex.models.registry import get_infer_weights_converter
+from awex.util import device as device_util
 
 # Tiny Qwen3-MoE-like geometry: GQA with 8 query heads and 2 KV heads.
 NUM_HEADS = 8
@@ -65,6 +66,21 @@ def _make_converter(tp_size=1, ep_size=1, tp_rank=0, ep_rank=0):
         _infer_engine_config(tp_size=tp_size, ep_size=ep_size),
         _rank_info(tp_rank=tp_rank, ep_rank=ep_rank),
     )
+
+
+def test_backend_uses_available_cuda_when_visibility_envs_overlap(monkeypatch):
+    monkeypatch.delenv("AWEX_DEVICE_TYPE", raising=False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    monkeypatch.setenv("ASCEND_RT_VISIBLE_DEVICES", "0")
+    monkeypatch.setattr(device_util, "is_npu_available", lambda: False)
+    monkeypatch.setattr(device_util, "is_cuda_available", lambda: True)
+    infer_engine_config = SimpleNamespace(tp_size=1, ep_size=1)
+
+    converter = SGlangToHFWeightConverterQwen3Moe(
+        _model_config(), infer_engine_config, _rank_info()
+    )
+
+    assert converter.device_backend == "cuda"
 
 
 def _sglang_named_params(num_local_experts=NUM_EXPERTS):
