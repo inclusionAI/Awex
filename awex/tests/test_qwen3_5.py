@@ -271,6 +271,56 @@ def test_native_vision_names_match_sglang(
 
 
 @pytest.mark.parametrize(
+    ("mcore_name", "canonical_name"),
+    [
+        (
+            "vision_model.patch_embed.proj.weight",
+            "model.visual.patch_embed.proj.weight",
+        ),
+        (
+            "vision_model.patch_embed.proj.bias",
+            "model.visual.patch_embed.proj.bias",
+        ),
+        ("vision_model.pos_embed.weight", "model.visual.pos_embed.weight"),
+        (
+            "vision_model.merger.patch_norm.weight",
+            "model.visual.merger.norm.weight",
+        ),
+        (
+            "vision_model.merger.patch_norm.bias",
+            "model.visual.merger.norm.bias",
+        ),
+        (
+            "vision_model.merger.linear_fc1.weight",
+            "model.visual.merger.linear_fc1.weight",
+        ),
+        (
+            "vision_model.merger.linear_fc1.bias",
+            "model.visual.merger.linear_fc1.bias",
+        ),
+        (
+            "vision_model.merger.linear_fc2.weight",
+            "model.visual.merger.linear_fc2.weight",
+        ),
+        (
+            "vision_model.merger.linear_fc2.bias",
+            "model.visual.merger.linear_fc2.bias",
+        ),
+    ],
+)
+def test_native_vision_direct_names(
+    mcore_name, canonical_name, vl_config, tf_config, rank_info
+):
+    """Cover the parameter names emitted by Megatron-Bridge Qwen3.5 VLM."""
+    converter = make_train_converter(vl_config, rank_info, tf_config)
+    parameter = torch.ones(4)
+
+    assert converter.convert_param(f"module.module.{mcore_name}", parameter) == [
+        (canonical_name, parameter)
+    ]
+
+
+@pytest.mark.parametrize(
     ("name", "expected_type", "expected_dim", "expected_shards"),
     [
         (

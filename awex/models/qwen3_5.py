@@ -418,13 +418,15 @@ class _Qwen3_5McoreConverterFactory:
             """
 
             _vision_direct_mapping = {
-                "vision_model.patch_embed.weight": "model.visual.patch_embed.proj.weight",
-                "vision_model.patch_embed.bias": "model.visual.patch_embed.proj.bias",
-                "vision_model.position_embeddings.weight": "model.visual.pos_embed.weight",
-                "vision_model.ln_post.weight": "model.visual.norm.weight",
-                "vision_model.ln_post.bias": "model.visual.norm.bias",
-                "vision_projection_pre_norm.weight": "model.visual.merger.norm.weight",
-                "vision_projection_pre_norm.bias": "model.visual.merger.norm.bias",
+                "vision_model.patch_embed.proj.weight": "model.visual.patch_embed.proj.weight",
+                "vision_model.patch_embed.proj.bias": "model.visual.patch_embed.proj.bias",
+                "vision_model.pos_embed.weight": "model.visual.pos_embed.weight",
+                "vision_model.merger.patch_norm.weight": "model.visual.merger.norm.weight",
+                "vision_model.merger.patch_norm.bias": "model.visual.merger.norm.bias",
+                "vision_model.merger.linear_fc1.weight": "model.visual.merger.linear_fc1.weight",
+                "vision_model.merger.linear_fc1.bias": "model.visual.merger.linear_fc1.bias",
+                "vision_model.merger.linear_fc2.weight": "model.visual.merger.linear_fc2.weight",
+                "vision_model.merger.linear_fc2.bias": "model.visual.merger.linear_fc2.bias",
             }
             _vision_layer_mapping = {
                 "self_attention.linear_qkv.weight": "attn.qkv.weight",
@@ -439,14 +441,6 @@ class _Qwen3_5McoreConverterFactory:
                 "mlp.linear_fc1.bias": "mlp.linear_fc1.bias",
                 "mlp.linear_fc2.weight": "mlp.linear_fc2.weight",
                 "mlp.linear_fc2.bias": "mlp.linear_fc2.bias",
-            }
-            _vision_projection_mapping = {
-                "linear_fc1.layer_norm_weight": "norm.weight",
-                "linear_fc1.layer_norm_bias": "norm.bias",
-                "linear_fc1.weight": "linear_fc1.weight",
-                "linear_fc1.bias": "linear_fc1.bias",
-                "linear_fc2.weight": "linear_fc2.weight",
-                "linear_fc2.bias": "linear_fc2.bias",
             }
 
             def __init__(self, hf_config, rank_info, infer_conf, tf_config):
@@ -597,15 +591,6 @@ class _Qwen3_5McoreConverterFactory:
                             parameter,
                         )
                     ]
-                projection_prefix = "vision_projection.encoder."
-                if name.startswith(projection_prefix):
-                    suffix = name[len(projection_prefix) :]
-                    target_suffix = self._vision_projection_mapping.get(suffix)
-                    if target_suffix is None:
-                        raise NotImplementedError(
-                            f"Unsupported Qwen3.5 vision merger parameter: {name}"
-                        )
-                    return [(f"model.visual.merger.{target_suffix}", parameter)]
                 raise NotImplementedError(
                     f"Unsupported Qwen3.5 vision parameter: {name}"
                 )
@@ -615,9 +600,7 @@ class _Qwen3_5McoreConverterFactory:
                 name = name.replace("module.", "")
                 if name.startswith(("language_model.mtp.", "model.mtp.", "mtp.")):
                     return []
-                if name.startswith("vision_model.") or name.startswith(
-                    "vision_projection"
-                ):
+                if name.startswith("vision_model."):
                     return self._convert_visual_param(name, parameter)
 
                 if name.startswith("language_model."):
