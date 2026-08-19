@@ -841,20 +841,24 @@ class LinearMLAMcoreConverterMixin:
         if other_key not in layer_cache:
             return []
 
-        # LinearMLAShardingMixin.get_sharding_strategy() always declares
-        # ``attention.fused_qkv_a_proj_with_mqa.weight`` as NO_SHARDING, so the
-        # transfer plan ships the converted tensor UNCUT to every SGLang TP
-        # rank. The receiver's load_weights layout is the plain concatenation
-        # ``torch.cat([q_a, kv_a], dim=0)``; any infer-TP interleaved layout
-        # ([q_0;kv_0;q_1;kv_1;...]) scrambles
-        # rows for every recipient. Both inputs were already gathered to full
-        # tensors via get_full_tensor above, so the canonical concat is correct
-        # regardless of the train attn-TP size. Keep it unconditional unless
-        # the sharding metadata and transfer plan are changed to perform a
-        # real TP split of this parameter.
-        fused_tensor = torch.cat(
-            [layer_cache["q_a_proj"], layer_cache["kv_a_proj"]], dim=0
-        )
+        # SGLang consumes this parameter per TP rank as [q_i ; kv_i]. With
+        # train attention TP the writer emits a tensor that AWEX chunks on
+        # dim 0, so it has to be laid out [q_0;kv_0;q_1;kv_1;...] or each rank
+        # receives a slice straddling q and kv. Without train attention TP the
+        # tensor reaches every rank uncut and must match SGLang's own
+        # load_weights layout, the plain concatenation. Both layouts have the
+        # same shape, so choosing wrong corrupts attention silently instead of
+        # raising.
+        if self.rank_info.attn_tp_size == 1:
+            fused_tensor = torch.cat(
+                [layer_cache["q_a_proj"], layer_cache["kv_a_proj"]], dim=0
+            )
+        else:
+            fused_tensor = pack_fused_qkv_a_proj_for_tp(
+                layer_cache["q_a_proj"],
+                layer_cache["kv_a_proj"],
+                self.infer_atten_tp_size,
+            )
         del self.qkv_a_proj_cache[layer_number]
         return [("attention.fused_qkv_a_proj_with_mqa.weight", fused_tensor)]
 
@@ -985,6 +989,52 @@ class LinearMLAMcoreConverterMixin:
             return self._post_process_linear_mla_params(converted)
 
         raise NotImplementedError(f"Unsupported parameter name: {name}")
+
+
+def pack_fused_qkv_a_proj_for_tp(
+    q_proj: torch.Tensor,
+    kv_proj: torch.Tensor,
+    infer_tp_size: int,
+) -> torch.Tensor:
+    """Pack MLA q_a/kv_a full tensors in infer-TP local shard order.
+
+    SGLang's fused MLA parameter is consumed per TP rank as:
+    [q_local_rank_i ; kv_local_rank_i]
+
+    AWEX later applies generic TP chunking on dim 0, so the full writer-side
+    tensor must be laid out as:
+    [q_0 ; kv_0 ; q_1 ; kv_1 ; ...]
+    rather than [q_all ; kv_all].
+    """
+    if infer_tp_size <= 0:
+        raise ValueError(f"infer_tp_size must be positive, got {infer_tp_size}")
+    if q_proj.dim() != 2 or kv_proj.dim() != 2:
+        raise ValueError(
+            "Expected 2D MLA projection weights, got "
+            f"q_proj.dim={q_proj.dim()}, kv_proj.dim={kv_proj.dim()}"
+        )
+    if q_proj.shape[1] != kv_proj.shape[1]:
+        raise ValueError(
+            "MLA q/kv projection input dims must match, got "
+            f"q_proj.shape={tuple(q_proj.shape)}, kv_proj.shape={tuple(kv_proj.shape)}"
+        )
+    if q_proj.shape[0] % infer_tp_size != 0:
+        raise ValueError(
+            "MLA q projection rows must be divisible by infer_tp_size, got "
+            f"rows={q_proj.shape[0]}, infer_tp_size={infer_tp_size}"
+        )
+    if kv_proj.shape[0] % infer_tp_size != 0:
+        raise ValueError(
+            "MLA kv projection rows must be divisible by infer_tp_size, got "
+            f"rows={kv_proj.shape[0]}, infer_tp_size={infer_tp_size}"
+        )
+
+    q_shards = q_proj.chunk(infer_tp_size, dim=0)
+    kv_shards = kv_proj.chunk(infer_tp_size, dim=0)
+    return torch.cat(
+        [torch.cat([q_shards[i], kv_shards[i]], dim=0) for i in range(infer_tp_size)],
+        dim=0,
+    )
 
 
 def get_full_tensor(weight: torch.Tensor, dim: int = 0):
