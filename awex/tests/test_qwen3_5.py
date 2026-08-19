@@ -186,7 +186,7 @@ def test_main_gated_qkv_has_train_infer_parity(
     )
     infer = infer_converter.convert_param("model.layers.0.qkv_proj.weight", train[0][1])
 
-    expected = "model.language_model.layers.0.self_attn.qkv_proj.weight"
+    expected = "model.layers.0.self_attn.qkv_proj.weight"
     assert train[0][0] == infer[0][0] == expected
     torch.testing.assert_close(train[0][1], infer[0][1], rtol=0, atol=0)
 
@@ -202,8 +202,8 @@ def test_gdn_conversion_matches_sglang_fused_names(vl_config, tf_config, rank_in
     )
 
     assert [name for name, _ in converted] == [
-        "model.language_model.layers.0.linear_attn.in_proj_qkvz.weight",
-        "model.language_model.layers.0.linear_attn.in_proj_ba.weight",
+        "model.layers.0.linear_attn.in_proj_qkvz.weight",
+        "model.layers.0.linear_attn.in_proj_ba.weight",
     ]
     assert converted[0][1].shape[0] == 24
     assert converted[1][1].shape[0] == 8
@@ -249,7 +249,34 @@ def test_pipeline_mapping_reindexes_main_layers(vl_config, tf_config, rank_info)
         "self_attention.linear_proj.weight",
         torch.ones(8, 8),
     )
-    assert main[0][0] == "model.language_model.layers.3.self_attn.o_proj.weight"
+    assert main[0][0] == "model.layers.3.self_attn.o_proj.weight"
+
+
+def test_text_and_vlm_configs_share_language_namespace(
+    vl_config, text_config, tf_config, rank_info, infer_engine_config
+):
+    """SGLang may expose either the wrapped VLM or its causal-LM submodule."""
+    name = "model.layers.0.linear_attn.out_proj.weight"
+    parameter = torch.ones(8, 8)
+    train_converter = make_train_converter(vl_config, rank_info, tf_config)
+    vl_converter = SGlangToHFWeightConverterQwen3_5(
+        vl_config, infer_engine_config, rank_info
+    )
+    text_converter = SGlangToHFWeightConverterQwen3_5(
+        text_config, infer_engine_config, rank_info
+    )
+
+    expected = [(name, parameter)]
+    assert (
+        train_converter.convert_param(
+            "module.module.language_model.decoder.layers.0."
+            "self_attention.out_proj.weight",
+            parameter,
+        )
+        == expected
+    )
+    assert vl_converter.convert_param(name, parameter) == expected
+    assert text_converter.convert_param(name, parameter) == expected
 
 
 def test_native_vision_names_match_sglang(
@@ -324,25 +351,25 @@ def test_native_vision_direct_names(
     ("name", "expected_type", "expected_dim", "expected_shards"),
     [
         (
-            "model.language_model.layers.0.self_attn.qkv_proj.weight",
+            "model.layers.0.self_attn.qkv_proj.weight",
             ShardingType.TP_SHARDING,
             0,
             2,
         ),
         (
-            "model.language_model.layers.0.linear_attn.out_proj.weight",
+            "model.layers.0.linear_attn.out_proj.weight",
             ShardingType.TP_SHARDING,
             1,
             2,
         ),
         (
-            "model.language_model.layers.0.mlp.experts.0.down_proj.weight",
+            "model.layers.0.mlp.experts.0.down_proj.weight",
             ShardingType.EP_SHARDING,
             1,
             2,
         ),
         (
-            "model.language_model.layers.0.mlp.shared_expert.down_proj.weight",
+            "model.layers.0.mlp.shared_expert.down_proj.weight",
             ShardingType.TP_SHARDING,
             1,
             2,
@@ -395,5 +422,5 @@ def test_ep_is_preserved_when_dense_tp_is_one(rank_info):
     )
 
     assert strategy.get_sharding_strategy(
-        "model.language_model.layers.0.mlp.experts.0.gate_proj.weight"
+        "model.layers.0.mlp.experts.0.gate_proj.weight"
     ) == (ShardingType.EP_SHARDING, 0, 2)

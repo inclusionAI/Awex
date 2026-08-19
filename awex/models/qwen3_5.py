@@ -24,14 +24,16 @@ handled by the ordinary Qwen3 GQA splitter.  This module keeps the existing
 Qwen3 converters as the common path and only specializes the hybrid-attention
 and vision layouts.
 
-The canonical names used by Awex follow the Hugging Face checkpoint namespace:
-``model.language_model.*`` for multimodal text weights and ``model.visual.*``
-for the vision tower.  Checkpoints may also expose top-level ``mtp.*`` weights,
-but RL training does not optimize the draft head, so both converter ingress
-paths deliberately filter those parameters before metadata and communication
-plans are built.  Dense and MoE architectures intentionally share this file;
-the inherited Qwen3 MLP conversion already distinguishes dense,
-routed-expert, and shared-expert parameters from their names.
+The canonical names used by Awex are ``model.*`` for language weights and
+``model.visual.*`` for the vision tower.  The language namespace is deliberately
+independent of the Hugging Face VLM wrapper because SGLang may expose either the
+top-level conditional-generation model or its unwrapped causal-LM submodule to
+the weight-update callback.  Checkpoints may also expose top-level ``mtp.*``
+weights, but RL training does not optimize the draft head, so both converter
+ingress paths filter those parameters before metadata and communication plans
+are built.  Dense and MoE architectures intentionally share this file; the
+inherited Qwen3 MLP conversion already distinguishes dense, routed-expert, and
+shared-expert parameters from their names.
 """
 
 from types import SimpleNamespace
@@ -336,8 +338,6 @@ class SGlangToHFWeightConverterQwen3_5(SGlangToHFWeightConverterQwen3Moe):
     """
 
     def __init__(self, model_config, infer_engine_config, rank_info):
-        self.root_config = model_config
-        self.is_multimodal = hasattr(model_config, "text_config")
         super().__init__(
             _Qwen3_5Layout.text_config(model_config),
             infer_engine_config,
@@ -350,11 +350,6 @@ class SGlangToHFWeightConverterQwen3_5(SGlangToHFWeightConverterQwen3Moe):
     @staticmethod
     def _normalize_shared_expert(name: str) -> str:
         return name.replace(".shared_experts.", ".shared_expert.")
-
-    def _canonical_main_name(self, name: str) -> str:
-        if self.is_multimodal and name.startswith("model."):
-            return name.replace("model.", "model.language_model.", 1)
-        return name
 
     @torch.no_grad()
     def convert_param(
@@ -379,12 +374,12 @@ class SGlangToHFWeightConverterQwen3_5(SGlangToHFWeightConverterQwen3Moe):
                 ("qkv_proj.", "o_proj.", "q_norm.", "k_norm.")
             ):
                 canonical = f"model.layers.{layer_number}.self_attn.{remaining_name}"
-                return [(self._canonical_main_name(canonical), parameter)]
+                return [(canonical, parameter)]
             if remaining_name.startswith("linear_attn.") or remaining_name.startswith(
                 "mlp.shared_expert_gate."
             ):
                 canonical = self._normalize_shared_expert(name)
-                return [(self._canonical_main_name(canonical), parameter)]
+                return [(canonical, parameter)]
 
         converted = []
         for converted_name, converted_parameter in super().convert_param(
@@ -393,7 +388,7 @@ class SGlangToHFWeightConverterQwen3_5(SGlangToHFWeightConverterQwen3Moe):
             converted_name = self._normalize_shared_expert(converted_name)
             converted.append(
                 (
-                    self._canonical_main_name(converted_name),
+                    converted_name,
                     converted_parameter,
                 )
             )
@@ -446,7 +441,6 @@ class _Qwen3_5McoreConverterFactory:
             def __init__(self, hf_config, rank_info, infer_conf, tf_config):
                 self.root_config = hf_config
                 self.vision_config = getattr(hf_config, "vision_config", None)
-                self.is_multimodal = hasattr(hf_config, "text_config")
                 super().__init__(
                     _Qwen3_5Layout.text_config(hf_config),
                     rank_info,
@@ -605,18 +599,7 @@ class _Qwen3_5McoreConverterFactory:
 
                 if name.startswith("language_model."):
                     name = name[len("language_model.") :]
-                converted = super().convert_param(name, parameter, vp_stage=vp_stage)
-                if not self.is_multimodal:
-                    return converted
-                return [
-                    (
-                        converted_name.replace("model.", "model.language_model.", 1)
-                        if converted_name.startswith("model.")
-                        else converted_name,
-                        converted_parameter,
-                    )
-                    for converted_name, converted_parameter in converted
-                ]
+                return super().convert_param(name, parameter, vp_stage=vp_stage)
 
         return McoreToHFWeightConverterQwen3_5
 
