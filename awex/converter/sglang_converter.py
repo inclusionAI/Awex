@@ -15,13 +15,13 @@
 # specific language governing permissions and limitations
 # under the License.
 
-import os
 from typing import List, Tuple
 
 import torch
 from transformers import PretrainedConfig
 
 from awex.converter.weights_converter import append_scale_inv, normalize_scale_inv_name
+from awex.util import device as device_util
 
 
 # all sglang related imports must be local imports to avoid import error if
@@ -62,12 +62,7 @@ class SGlangToHFWeightConverter:
         comm_backend = self._cfg_value(infer_engine_config, "comm_backend", None)
         if isinstance(comm_backend, str) and comm_backend.strip().lower() == "hccl":
             return "npu"
-        env_backend = os.environ.get("AWEX_DEVICE_TYPE", "").strip().lower()
-        if env_backend in {"cuda", "npu", "cpu"}:
-            return env_backend
-        if os.environ.get("ASCEND_RT_VISIBLE_DEVICES"):
-            return "npu"
-        return "cuda"
+        return device_util.get_device_type()
 
     def _use_transposed_moe_layout(self, name: str, parameter: torch.Tensor) -> bool:
         if self.device_backend != "npu" or parameter.ndim != 2:
