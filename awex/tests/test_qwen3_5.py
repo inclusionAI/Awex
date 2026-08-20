@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""CPU regression tests for Qwen3.5 dense/MoE and VLM conversion."""
+"""CPU regression tests for Qwen3.5/Qwen3.6 dense, MoE, and VLM conversion."""
 
 from types import SimpleNamespace
 
@@ -151,6 +151,98 @@ def test_registry_resolves_target_converter(
         infer_engine_config,
     )
     assert isinstance(converter, SGlangToHFWeightConverterQwen3_5)
+
+
+@pytest.mark.parametrize(
+    (
+        "architecture",
+        "root_model_type",
+        "text_model_type",
+        "hidden_size",
+        "num_hidden_layers",
+        "num_attention_heads",
+        "num_key_value_heads",
+        "linear_num_value_heads",
+        "num_experts",
+    ),
+    [
+        (
+            "Qwen3_5ForConditionalGeneration",
+            "qwen3_5",
+            "qwen3_5_text",
+            5120,
+            64,
+            24,
+            4,
+            48,
+            None,
+        ),
+        (
+            "Qwen3_5MoeForConditionalGeneration",
+            "qwen3_5_moe",
+            "qwen3_5_moe_text",
+            2048,
+            40,
+            16,
+            2,
+            32,
+            256,
+        ),
+    ],
+)
+def test_qwen3_6_official_configs_reuse_qwen3_5_contract(
+    architecture,
+    root_model_type,
+    text_model_type,
+    hidden_size,
+    num_hidden_layers,
+    num_attention_heads,
+    num_key_value_heads,
+    linear_num_value_heads,
+    num_experts,
+    rank_info,
+    infer_engine_config,
+):
+    """Qwen3.6 Dense and MoE retain the public Qwen3.5 identifiers."""
+    text_config = SimpleNamespace(
+        model_type=text_model_type,
+        hidden_size=hidden_size,
+        num_hidden_layers=num_hidden_layers,
+        num_attention_heads=num_attention_heads,
+        num_key_value_heads=num_key_value_heads,
+        head_dim=256,
+        linear_num_key_heads=16,
+        linear_key_head_dim=128,
+        linear_num_value_heads=linear_num_value_heads,
+        linear_value_head_dim=128,
+        num_experts=num_experts,
+        tie_word_embeddings=False,
+    )
+    config = SimpleNamespace(
+        architectures=[architecture],
+        model_type=root_model_type,
+        text_config=text_config,
+        vision_config=SimpleNamespace(num_heads=16, hidden_size=1152),
+        tie_word_embeddings=False,
+    )
+
+    converter = get_infer_weights_converter(
+        "sglang",
+        architecture,
+        config,
+        rank_info,
+        infer_engine_config,
+    )
+
+    assert isinstance(converter, SGlangToHFWeightConverterQwen3_5)
+    assert converter.model_config is text_config
+    assert (
+        converter.convert_param(
+            "model.layers.0.linear_attn.A_log", torch.ones(linear_num_value_heads)
+        )[0][0]
+        == "model.layers.0.linear_attn.A_log"
+    )
+    assert converter.convert_param("mtp.norm.weight", torch.ones(hidden_size)) == []
 
 
 def test_gated_qkv_layout_is_grouped_by_inference_tp(text_config):

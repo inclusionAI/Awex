@@ -15,14 +15,16 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Qwen3.5 dense/MoE and multimodal weight-update support.
+"""Qwen3.5/Qwen3.6 dense, MoE, and multimodal weight-update support.
 
 Qwen3.5 combines Qwen3-style dense or expert MLPs with alternating full
-attention and Gated DeltaNet layers.  Its full-attention query projection also
-contains an output gate, so the Megatron ``linear_qkv`` tensor cannot be
-handled by the ordinary Qwen3 GQA splitter.  This module keeps the existing
-Qwen3 converters as the common path and only specializes the hybrid-attention
-and vision layouts.
+attention and Gated DeltaNet layers.  Qwen3.6 publishes the same Transformers
+``Qwen3_5*`` architecture and model-type identifiers and retains this weight
+contract, so both releases intentionally share this module.  Their full-
+attention query projection also contains an output gate, so the Megatron
+``linear_qkv`` tensor cannot be handled by the ordinary Qwen3 GQA splitter.
+This module keeps the existing Qwen3 converters as the common path and only
+specializes the hybrid-attention and vision layouts.
 
 The canonical names used by Awex are ``model.*`` for language weights and
 ``model.visual.*`` for the vision tower.  The language namespace is deliberately
@@ -53,8 +55,8 @@ class _Qwen3_5Layout:
     """Tensor-layout operations shared by the train-side converter.
 
     These methods operate only on tensors and model geometry.  Keeping them in
-    one helper class makes the Qwen3.5-specific packing rules explicit without
-    adding another set of generic converter functions to the package.
+    one helper class makes the shared Qwen3.5/Qwen3.6 packing rules explicit
+    without adding another set of generic converter functions to the package.
     """
 
     @staticmethod
@@ -64,7 +66,7 @@ class _Qwen3_5Layout:
 
     @classmethod
     def head_dim(cls, config) -> int:
-        """Resolve the explicit Qwen3.5 head width with a safe fallback."""
+        """Resolve the explicit Qwen3.5/Qwen3.6 head width safely."""
         config = cls.text_config(config)
         value = getattr(config, "head_dim", None)
         if value:
@@ -273,7 +275,7 @@ class _Qwen3_5Layout:
 
 
 class Qwen3_5ShardingStrategy(Qwen3VLShardingStrategy):
-    """TP/EP rules for Qwen3.5 language and vision parameters.
+    """TP/EP rules for Qwen3.5/Qwen3.6 language and vision parameters.
 
     Pipeline parallelism is represented by parameter ownership in Awex rather
     than another sharding enum, so this class only declares the tensor or expert
@@ -328,7 +330,7 @@ class Qwen3_5ShardingStrategy(Qwen3VLShardingStrategy):
 
 
 class SGlangToHFWeightConverterQwen3_5(SGlangToHFWeightConverterQwen3Moe):
-    """Normalize current SGLang Qwen3.5 target-model parameters.
+    """Normalize current SGLang Qwen3.5/Qwen3.6 target parameters.
 
     SGLang removes ``self_attn`` from full-attention module names and fuses the
     gated query/K/V weights into ``qkv_proj``.  The converter restores a stable
@@ -402,7 +404,7 @@ class _Qwen3_5McoreConverterFactory:
         base_converter = _build_mcore_converter_qwen3_moe()
 
         class McoreToHFWeightConverterQwen3_5(base_converter):
-            """Convert trainable Megatron Qwen3.5 language and vision weights.
+            """Convert trainable Megatron Qwen3.5/Qwen3.6 weights.
 
             Decoder PP layer ids continue through the existing Qwen3 converter,
             and expert id expansion plus EP offsets are inherited from the
@@ -545,7 +547,8 @@ class _Qwen3_5McoreConverterFactory:
                     target_suffix = self._vision_layer_mapping.get(suffix)
                     if target_suffix is None:
                         raise NotImplementedError(
-                            f"Unsupported Qwen3.5 vision layer parameter: {name}"
+                            "Unsupported Qwen3.5/Qwen3.6 vision layer "
+                            f"parameter: {name}"
                         )
                     if suffix in {
                         "self_attention.linear_qkv.weight",
@@ -553,7 +556,8 @@ class _Qwen3_5McoreConverterFactory:
                     }:
                         if self.vision_config is None:
                             raise ValueError(
-                                "vision_config is required for Qwen3.5 visual QKV"
+                                "vision_config is required for Qwen3.5/Qwen3.6 "
+                                "visual QKV"
                             )
                         from awex.converter.mcore_converter import (
                             convert_qkv_bias_along_tp_attention,
@@ -586,7 +590,7 @@ class _Qwen3_5McoreConverterFactory:
                         )
                     ]
                 raise NotImplementedError(
-                    f"Unsupported Qwen3.5 vision parameter: {name}"
+                    f"Unsupported Qwen3.5/Qwen3.6 vision parameter: {name}"
                 )
 
             @torch.no_grad()
