@@ -269,13 +269,20 @@ class NCCLWorkerWeightsReader(WorkerWeightsReader):
             self.training_params_meta,
             self.infer_to_train_device_mapping[self.transfer_rank],
         )
-        from awex.transfer.nccl_stream_batch import NcclColocateStreamBatchTransport
-
-        self.colocate_transport = NcclColocateStreamBatchTransport(
-            self.transfer_rank, self.infer_world_size
-        )
+        self.colocate_transport = self.create_colocate_transport()
         logger.info(
             f"Initialized NCCL weights reader for rank {self.transfer_rank} in colocate mode"
+        )
+
+    def create_colocate_transport(self):
+        """Create the transport; subclasses may select a different implementation.
+
+        Every reader in a colocate group must select the same implementation.
+        """
+        from awex.transfer.nccl_stream_batch import NcclColocateStreamBatchTransport
+
+        return NcclColocateStreamBatchTransport(
+            self.transfer_rank, self.infer_world_size
         )
 
     def pre_update_weights(self, step_id, **kwargs):
