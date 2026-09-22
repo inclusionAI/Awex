@@ -119,7 +119,6 @@ class BoundedMemoryNcclColocateStreamBatchTransport(NcclColocateStreamBatchTrans
             validate_rank_mappings,
         )
         from awex.transfer.nccl_stream_batch import hang_detector
-        from awex.transfer.transfer_plan import slice_tensor
         from awex.util import device as device_util
 
         logger.info(
@@ -163,32 +162,20 @@ class BoundedMemoryNcclColocateStreamBatchTransport(NcclColocateStreamBatchTrans
         all_send_p2p_ops = {}
         all_recv_p2p_ops = {}
         tensors_to_copy = []
-        train_slice_context = {}
-        non_contiguous_tensor_pairs = []
 
         for peer_rank, ops in send_ops.items():
             mapped_peer_rank = train_to_infer_device_mapping.get(peer_rank, peer_rank)
             if mapped_peer_rank == transfer_rank:
                 for op in ops:
                     send_tensor = send_parameters[op.send_shard_meta.name]
-                    tensor_sliced = slice_tensor(
-                        send_tensor,
-                        op,
-                        True,
-                        slice_context=train_slice_context,
-                    )
+                    tensor_sliced = send_tensor[op.train_slices]
                     tensors_to_copy.append(tensor_sliced)
                 continue
 
             p2p_ops = []
             for op in ops:
                 send_tensor = send_parameters[op.send_shard_meta.name]
-                tensor_sliced = slice_tensor(
-                    send_tensor,
-                    op,
-                    True,
-                    slice_context=train_slice_context,
-                )
+                tensor_sliced = send_tensor[op.train_slices]
                 recv_rank = train_to_infer_device_mapping.get(
                     op.recv_rank, op.recv_rank
                 )
@@ -210,13 +197,7 @@ class BoundedMemoryNcclColocateStreamBatchTransport(NcclColocateStreamBatchTrans
             p2p_ops = []
             for op in ops:
                 recv_tensor = recv_parameters[op.recv_shard_meta.name]
-                tensor_sliced = slice_tensor(recv_tensor, op, False)
-                if not tensor_sliced.is_contiguous():
-                    original_tensor = tensor_sliced
-                    tensor_sliced = torch.empty_like(
-                        tensor_sliced, memory_format=torch.contiguous_format
-                    )
-                    non_contiguous_tensor_pairs.append((original_tensor, tensor_sliced))
+                tensor_sliced = recv_tensor[op.inf_slices]
                 p2p_op = dist.P2POp(
                     dist.irecv if async_op else dist.recv,
                     tensor_sliced,
@@ -237,9 +218,8 @@ class BoundedMemoryNcclColocateStreamBatchTransport(NcclColocateStreamBatchTrans
         else:
             logger.info("No tensors to copy for %s", task_id)
 
-        # slice_tensor may materialize send slices on the caller stream.
-        # Finish planning copies before independent transfer streams consume
-        # them, including ranks with no local copy to synchronize implicitly.
+        # Finish source writes and local copies before transfer streams read
+        # source views, including ranks with no local copy to synchronize.
         device_util.synchronize()
 
         future = Future()
@@ -260,11 +240,6 @@ class BoundedMemoryNcclColocateStreamBatchTransport(NcclColocateStreamBatchTrans
             rank_coordinate,
             step_id,
         )
-        if non_contiguous_tensor_pairs:
-            with torch.no_grad():
-                for original_tensor, recv_tensor in non_contiguous_tensor_pairs:
-                    original_tensor.copy_(recv_tensor)
-            non_contiguous_tensor_pairs.clear()
         device_util.synchronize()
         future.set_result(True)
         if self._expert_pack_stats is not None:
@@ -432,6 +407,7 @@ class BoundedMemoryNcclColocateStreamBatchTransport(NcclColocateStreamBatchTrans
         for op_idx in range(max_ops):
             work_handles = []
             owned_send_tensors = []
+            pending_recv_copies = []
             for peer_rank, ops in peer_ops_with_rank:
                 if op_idx >= len(ops):
                     continue
@@ -445,7 +421,9 @@ class BoundedMemoryNcclColocateStreamBatchTransport(NcclColocateStreamBatchTrans
                     # NCCL can otherwise read a partially written clone and
                     # silently deliver sparse NaN/Inf values.
                     tensor_for_transfer = (
-                        p2p_op.tensor.clone() if is_send else p2p_op.tensor
+                        p2p_op.tensor.clone(memory_format=torch.contiguous_format)
+                        if is_send
+                        else p2p_op.tensor
                     )
                     if is_send:
                         # NCCL send/recv counts are expressed in elements of
@@ -458,17 +436,28 @@ class BoundedMemoryNcclColocateStreamBatchTransport(NcclColocateStreamBatchTrans
                         ):
                             tensor_for_transfer = tensor_for_transfer.to(recv_dtype)
                         owned_send_tensors.append(tensor_for_transfer)
+                    elif not p2p_op.tensor.is_contiguous():
+                        tensor_for_transfer = torch.empty_like(
+                            p2p_op.tensor, memory_format=torch.contiguous_format
+                        )
+                        pending_recv_copies.append(
+                            (stream, p2p_op.tensor, tensor_for_transfer)
+                        )
                     result = p2p_op.op(
                         tensor_for_transfer,
                         p2p_op.peer,
                         group=p2p_op.group,
                     )
                 if p2p_op.op is dist.isend or p2p_op.op is dist.irecv:
-                    work_handles.append(result)
+                    work_handles.append((result, stream))
                 total_ops += 1
 
-            for work in work_handles:
-                work.wait()
+            for work, stream in work_handles:
+                with device_util.stream(stream):
+                    work.wait()
+            for stream, destination, received in pending_recv_copies:
+                with device_util.stream(stream), torch.no_grad():
+                    destination.copy_(received)
             # ProcessGroupNCCL Work.wait() only guarantees that the CUDA work
             # has been enqueued.  The send clones must remain alive until NCCL
             # has actually consumed them; otherwise the caching allocator can
@@ -477,6 +466,8 @@ class BoundedMemoryNcclColocateStreamBatchTransport(NcclColocateStreamBatchTrans
             device_util.synchronize()
             work_handles.clear()
             owned_send_tensors.clear()
+            pending_recv_copies.clear()
+            destination = received = None
             tensor_for_transfer = None
             result = None
 
@@ -530,13 +521,20 @@ class BoundedMemoryNcclColocateStreamBatchTransport(NcclColocateStreamBatchTrans
                 with device_util.stream(stream):
                     if len(batch) == 1:
                         tensor_for_transfer = (
-                            p2p_op.tensor.clone() if is_send else p2p_op.tensor
+                            p2p_op.tensor.clone(memory_format=torch.contiguous_format)
+                            if is_send
+                            else p2p_op.tensor
                         )
                         if is_send:
                             recv_dtype = self._operation_wire_dtype(plan_op, p2p_op)
                             if tensor_for_transfer.dtype != recv_dtype:
                                 tensor_for_transfer = tensor_for_transfer.to(recv_dtype)
                             owned_send_tensors.append(tensor_for_transfer)
+                        elif not p2p_op.tensor.is_contiguous():
+                            tensor_for_transfer = self._allocate_packed_recv_batch(
+                                batch, self._operation_wire_dtype(plan_op, p2p_op)
+                            )
+                            owned_recv_tensors.append(tensor_for_transfer)
                     elif is_send:
                         tensor_for_transfer = self._pack_send_batch(batch)
                         owned_send_tensors.append(tensor_for_transfer)
@@ -556,7 +554,7 @@ class BoundedMemoryNcclColocateStreamBatchTransport(NcclColocateStreamBatchTrans
                         p2p_op.peer,
                         group=p2p_op.group,
                     )
-                    if len(batch) > 1 and is_recv:
+                    if is_recv and tensor_for_transfer is not p2p_op.tensor:
                         pending_recv_unpacks.append(
                             (stream, tensor_for_transfer, batch)
                         )
@@ -583,6 +581,7 @@ class BoundedMemoryNcclColocateStreamBatchTransport(NcclColocateStreamBatchTrans
             owned_send_tensors.clear()
             owned_recv_tensors.clear()
             pending_recv_unpacks.clear()
+            packed = None
             tensor_for_transfer = None
             result = None
 

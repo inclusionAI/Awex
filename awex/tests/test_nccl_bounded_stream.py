@@ -28,79 +28,85 @@ from awex.transfer.nccl_bounded_stream import (
 )
 
 
-@pytest.mark.parametrize("pending_slice_copy", [False, True])
-def test_bounded_transport_defers_send_clones_until_execution(
-    monkeypatch, pending_slice_copy
+@pytest.mark.parametrize("pack_ops", [1, 64])
+def test_bounded_transport_defers_strided_buffers_until_execution(
+    monkeypatch, pack_ops
 ):
-    """Building an AWEX transfer plan retains views instead of model-sized clones."""
+    """Real column slices remain views; wire buffers live for just one batch."""
+    import weakref
+
     from awex.transfer import nccl_stream_batch
     from awex.util import device as device_util
 
-    class _SourceTensor:
-        def __init__(self) -> None:
-            self.clone_calls = 0
-
-        def clone(self):
-            self.clone_calls += 1
-            return self
-
-    source = _SourceTensor()
-    source.ready = not pending_slice_copy
-    send_op = SimpleNamespace(
-        send_shard_meta=SimpleNamespace(name="weight"),
-        recv_rank=1,
-    )
-    send_plan = SimpleNamespace(operations={1: [send_op]})
-    recv_op = SimpleNamespace(recv_shard_meta=SimpleNamespace(name="weight"))
-    recv_plan = SimpleNamespace(operations={1: [recv_op]})
-    recv_storage = torch.full((2, 4), float("nan"))
-    recv_target = recv_storage[:, ::2]
-    expected_recv = torch.arange(4, dtype=torch.float32).reshape(2, 2)
-    transport = object.__new__(BoundedMemoryNcclColocateStreamBatchTransport)
-
-    def _inspect_plan(
-        transfer_rank,
-        world_size,
-        all_send_p2p_ops,
-        all_recv_p2p_ops,
-        weights_update_group,
-        rank_coordinate,
-        step_id,
-    ) -> None:
-        del (
-            transfer_rank,
-            world_size,
-            weights_update_group,
-            rank_coordinate,
-            step_id,
+    sources = {f"w{i}": torch.arange(32).reshape(4, 8).float() + i for i in range(3)}
+    targets = {name: torch.full((4, 8), float("nan")) for name in sources}
+    plan_ops = [
+        SimpleNamespace(
+            send_shard_meta=SimpleNamespace(name=name),
+            recv_shard_meta=SimpleNamespace(name=name, dtype=torch.float32),
+            train_slices=(slice(None), slice(2, 6)),
+            inf_slices=(slice(None), slice(None, None, 2)),
+            recv_rank=1,
+            overlap_shape=(4, 4),
+            param_class="expert",
         )
-        assert all_send_p2p_ops[1][0][1].tensor is source
-        assert source.clone_calls == 0
-        # A materialized slice cannot be consumed on the transfer stream until
-        # its asynchronous producer on the caller stream has completed.
-        assert source.ready
-        recv_buffer = all_recv_p2p_ops[1][0][1].tensor
-        assert recv_buffer.is_contiguous()
-        assert recv_buffer.data_ptr() != recv_target.data_ptr()
-        recv_buffer.copy_(expected_recv)
+        for name in sources
+    ]
+    transport = object.__new__(BoundedMemoryNcclColocateStreamBatchTransport)
+    transport._stream_pool = [object()]
+    live = []
+    payloads = []
+    recv_index = 0
 
+    class Work:
+        def wait(self):
+            pass
+
+    def send(tensor, peer, group):
+        assert tensor.is_contiguous()
+        assert all(ref() is None for ref in live)
+        live[:] = [weakref.ref(tensor)]
+        payloads.append(tensor.clone())
+        return Work()
+
+    def recv(tensor, peer, group):
+        nonlocal recv_index
+        assert tensor.is_contiguous()
+        assert all(ref() is None for ref in live)
+        live[:] = [weakref.ref(tensor)]
+        tensor.copy_(payloads[recv_index])
+        recv_index += 1
+        return Work()
+
+    def execute(rank, world, sends, recvs, group, coordinate, step):
+        # No planning-stage contiguous copies, on either side.
+        for op, p2p in sends[1]:
+            assert not p2p.tensor.is_contiguous()
+            assert (
+                p2p.tensor.untyped_storage().data_ptr()
+                == sources[op.send_shard_meta.name].untyped_storage().data_ptr()
+            )
+        for op, p2p in recvs[1]:
+            assert not p2p.tensor.is_contiguous()
+            assert (
+                p2p.tensor.untyped_storage().data_ptr()
+                == targets[op.recv_shard_meta.name].untyped_storage().data_ptr()
+            )
+        transport._execute_ops_concurrent(sends, [1])
+        assert all(ref() is None for ref in live)
+        transport._execute_ops_concurrent(recvs, [1])
+        assert all(ref() is None for ref in live)
+
+    monkeypatch.setenv("AWEX_EXPERT_PACK_OPS", str(pack_ops))
     monkeypatch.setattr(transport, "_validate_pack_config", lambda group: None)
-    transport.execute_recursive_partition_stream_transfer = _inspect_plan
+    transport.execute_recursive_partition_stream_transfer = execute
     monkeypatch.setattr(
-        nccl_stream_batch,
-        "hang_detector",
-        SimpleNamespace(submit=lambda *args, **kwargs: None),
+        nccl_stream_batch, "hang_detector", SimpleNamespace(submit=lambda *a, **k: None)
     )
-    monkeypatch.setattr(
-        "awex.transfer.nccl_comm.validate_rank_mappings", lambda *args: None
-    )
-    monkeypatch.setattr(
-        "awex.transfer.transfer_plan.slice_tensor",
-        lambda tensor, *args, **kwargs: tensor,
-    )
-    monkeypatch.setattr(
-        device_util, "synchronize", lambda: setattr(source, "ready", True)
-    )
+    monkeypatch.setattr(device_util, "stream", lambda stream: nullcontext())
+    monkeypatch.setattr(device_util, "synchronize", lambda: None)
+    monkeypatch.setattr(torch.distributed, "isend", send)
+    monkeypatch.setattr(torch.distributed, "irecv", recv)
     monkeypatch.setattr(
         torch.distributed,
         "P2POp",
@@ -108,24 +114,24 @@ def test_bounded_transport_defers_send_clones_until_execution(
             op=op, tensor=tensor, peer=peer, group=group
         ),
     )
-
     transport.update_weights_in_colocate_mode(
         train_to_infer_device_mapping={0: 0, 1: 1},
         infer_to_train_device_mapping={0: 0, 1: 1},
         transfer_rank=0,
         rank_coordinate="0-0-0",
         world_size=2,
-        send_transfer_plan=send_plan,
-        recv_transfer_plan=recv_plan,
+        send_transfer_plan=SimpleNamespace(operations={1: plan_ops}),
+        recv_transfer_plan=SimpleNamespace(operations={1: plan_ops}),
         weights_update_group=object(),
-        send_parameters={"weight": source},
-        recv_parameters={"weight": recv_target},
+        send_parameters=sources,
+        recv_parameters=targets,
         step_id=1,
     )
-
-    assert source.clone_calls == 0
-    torch.testing.assert_close(recv_target, expected_recv, rtol=0, atol=0)
-    assert torch.isnan(recv_storage[:, 1::2]).all()
+    for name in sources:
+        torch.testing.assert_close(
+            targets[name][:, ::2], sources[name][:, 2:6], rtol=0, atol=0
+        )
+        assert torch.isnan(targets[name][:, 1::2]).all()
 
 
 def test_bounded_transport_releases_each_send_clone_batch(monkeypatch):
@@ -143,7 +149,7 @@ def test_bounded_transport_releases_each_send_clone_batch(monkeypatch):
             counters["live"] -= 1
 
     class _SourceTensor:
-        def clone(self):
+        def clone(self, *, memory_format):
             counters["clones"] += 1
             return _Clone()
 
@@ -257,7 +263,7 @@ def test_bounded_transport_prepares_send_on_transfer_stream(monkeypatch):
     class _SourceTensor:
         dtype = torch.bfloat16
 
-        def clone(self):
+        def clone(self, *, memory_format):
             assert state["active_stream"] is transfer_stream
             return self
 
