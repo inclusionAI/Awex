@@ -91,7 +91,7 @@ def _model_context(scheduler):
         server_args=scheduler.server_args,
         scheduler=scheduler,
         tp_worker=scheduler.tp_worker,
-        real_tp_worker=scheduler.tp_worker,
+        real_tp_worker=getattr(scheduler.tp_worker, "worker", scheduler.tp_worker),
     )
     return context
 
@@ -107,7 +107,13 @@ def _execute_worker_task(scheduler, task):
         # Each rank gets a fresh payload, including the broadcast source rank.
         # Never attach live CUDA models or the scheduler to the forwarded task.
         fn, kwargs = cloudpickle.loads(task.payload)
-        runner = scheduler.tp_worker.model_runner
+        worker = scheduler.tp_worker
+        # 0.5.0's overlap scheduler delegates forwards to a thread-backed
+        # TpModelWorkerClient. Its target model lives under .worker.
+        if hasattr(worker, "worker"):
+            worker.forward_stream.synchronize()
+            worker = worker.worker
+        runner = worker.model_runner
         kwargs.update(
             model=runner.model,
             model_runner=runner,
@@ -285,6 +291,8 @@ async def _execute_task_async(engine, fn: Callable, **kwargs) -> list[Any]:
         # existing metadata contract while still executing on every replica.
         if not args.enable_dp_attention and args.dp_size > 1:
             results = [r for r in results if r.rank[0] == 0]
+        if args.enable_dp_attention:
+            results.sort(key=lambda r: r.rank[1:])
         return [pickle.loads(r.payload) for r in results]
 
 
