@@ -17,13 +17,15 @@
 
 """Install AWEX callbacks in SGLang's scheduler subprocesses before launch."""
 
+from __future__ import annotations
+
 import asyncio
 import functools
 import pickle
 import traceback
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 
 @dataclass
@@ -36,8 +38,8 @@ class _WorkerTask:
 class _WorkerResult:
     task_id: str
     rank: tuple
-    payload: Optional[bytes] = None
-    error: Optional[str] = None
+    payload: bytes | None = None
+    error: str | None = None
 
 
 def _send(socket, obj):
@@ -98,6 +100,7 @@ def _model_context(scheduler):
 
 def _execute_worker_task(scheduler, task):
     import cloudpickle
+    import torch.distributed as dist
 
     ranks = _parallel(scheduler)
     result = _WorkerResult(
@@ -122,7 +125,15 @@ def _execute_worker_task(scheduler, task):
         result.payload = pickle.dumps(fn(**kwargs), protocol=pickle.HIGHEST_PROTOCOL)
     except Exception:
         result.error = traceback.format_exc()
-    _send(scheduler._awex_result_socket, result)
+    # Non-DP-attention uses node-local tokenizer IPC even for multi-node TP.
+    # Gather through the existing world CPU group so remote ranks never try
+    # to connect to node 0's Unix socket. Each ordinary DP replica has a world.
+    world = scheduler.world_group
+    results = [None] * world.world_size if world.rank == 0 else None
+    dist.gather_object(result, results, dst=world.ranks[0], group=world.cpu_group)
+    if results is not None:
+        for result in results:
+            _send(scheduler._awex_result_socket, result)
 
 
 def _patch_scheduler():
@@ -152,11 +163,10 @@ def _patch_scheduler():
     @functools.wraps(original_init)
     def initialize(self, server_args, port_args, *args, **kwargs):
         original_init(self, server_args, port_args, *args, **kwargs)
-        # Every model rank replies, whereas SGLang's normal output socket is
-        # deliberately absent on non-leader TP and PP ranks.
-        self._awex_zmq_context = zmq.Context()
-        self._awex_result_socket = self._awex_zmq_context.socket(zmq.PUSH)
-        self._awex_result_socket.connect(port_args.tokenizer_ipc_name)
+        if self.world_group.rank == 0:
+            self._awex_zmq_context = zmq.Context()
+            self._awex_result_socket = self._awex_zmq_context.socket(zmq.PUSH)
+            self._awex_result_socket.connect(port_args.tokenizer_ipc_name)
 
     @functools.wraps(original_process)
     def process(self, requests):

@@ -7,6 +7,7 @@ from types import ModuleType, SimpleNamespace
 
 import cloudpickle
 import pytest
+import torch.distributed as dist
 
 from awex import sglang_patch as patch
 
@@ -101,6 +102,30 @@ def test_rank_failure_is_drained_and_next_task_works(client):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("dp_attention", [False, True])
+def test_dp_result_contract(client, dp_attention):
+    engine, _, _ = client
+    engine.server_args.dp_size = 2
+    engine.server_args.enable_dp_attention = dp_attention
+    manager = engine.tokenizer_manager
+
+    async def send(task):
+        for dp in reversed(range(2)):
+            for pp in reversed(range(2)):
+                tp_ranks = [dp] if dp_attention else range(2)
+                for tp in tp_ranks:
+                    rank = (dp, pp, tp)
+                    manager._result_dispatcher(
+                        patch._WorkerResult(task.task_id, rank, pickle.dumps(rank))
+                    )
+
+    manager.send_to_scheduler.send_pyobj = send
+    results = asyncio.run(patch._execute_task_async(engine, lambda: None))
+    assert results == [
+        (tp if dp_attention else 0, pp, tp) for pp in range(2) for tp in range(2)
+    ]
+
+
 def test_worker_payload_isolated_and_errors_returned(monkeypatch):
     ranks = SimpleNamespace(
         tp_rank=0,
@@ -117,12 +142,17 @@ def test_worker_payload_isolated_and_errors_returned(monkeypatch):
     )
     scheduler = SimpleNamespace(
         ps=ranks,
-        world_group=SimpleNamespace(world_size=1, rank=0, local_rank=0),
+        world_group=SimpleNamespace(
+            world_size=1, rank=0, local_rank=0, ranks=[0], cpu_group=None
+        ),
         server_args=SimpleNamespace(nnodes=1),
         tp_worker=SimpleNamespace(model_runner=SimpleNamespace(model="model")),
         _awex_result_socket=object(),
     )
     replies = []
+    monkeypatch.setattr(
+        dist, "gather_object", lambda obj, results, **kw: results.__setitem__(0, obj)
+    )
     monkeypatch.setattr(patch, "_send", lambda socket, obj: replies.append(obj))
 
     def callback(values, model, model_runner, model_context):
@@ -156,6 +186,7 @@ def test_pp_forwards_before_callback_exactly_once(monkeypatch):
 
     class Scheduler:
         def __init__(self, server_args, port_args):
+            self.world_group = SimpleNamespace(rank=0)
             self.ps = SimpleNamespace(
                 pp_rank=0, pp_size=2, attn_tp_rank=0, attn_cp_rank=0
             )
