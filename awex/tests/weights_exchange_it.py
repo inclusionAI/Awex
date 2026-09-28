@@ -182,7 +182,9 @@ class WeightsExchangeIT:
         os.environ[visible_env] = ",".join(map(str, range(tp_size)))
         import sglang as sgl
 
-        from awex.engine.sglang import extract_sgl_config
+        from awex.engine.sglang import extract_sgl_config, install_sglang_worker_hooks
+
+        install_sglang_worker_hooks()
 
         sgl_engine = sgl.Engine(
             **extract_sgl_config(self.inference_config), random_seed=42
