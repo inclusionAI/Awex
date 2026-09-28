@@ -183,6 +183,9 @@ class WeightsExchangeIT:
         import sglang as sgl
 
         from awex.engine.sglang import extract_sgl_config
+        from awex.sglang_patch import patch_sglang
+
+        patch_sglang()
 
         sgl_engine = sgl.Engine(
             **extract_sgl_config(self.inference_config), random_seed=42
