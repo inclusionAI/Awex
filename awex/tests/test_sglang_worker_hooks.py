@@ -9,7 +9,7 @@ import cloudpickle
 import pytest
 import torch.distributed as dist
 
-from awex import sglang_patch as patch
+from awex.engine import sglang
 
 
 @pytest.fixture
@@ -24,7 +24,7 @@ def client(monkeypatch):
         auto_create_handle_loop=lambda: None,
         _result_dispatcher=lambda obj: obj,
     )
-    patch._install_tokenizer(manager)
+    sglang._install_tokenizer(manager)
     engine = SimpleNamespace(
         tokenizer_manager=manager,
         server_args=SimpleNamespace(
@@ -39,7 +39,7 @@ def client(monkeypatch):
         # Deliberately return replies in reverse order, including a duplicate.
         for pp, tp in [(1, 1), (0, 1), (0, 1), (1, 0), (0, 0)]:
             manager._result_dispatcher(
-                patch._WorkerResult(
+                sglang._WorkerResult(
                     task.task_id, (0, pp, tp), pickle.dumps(fn(pp=pp, tp=tp, **kwargs))
                 )
             )
@@ -52,7 +52,7 @@ def test_callback_closure_and_rank_order(client):
     engine, sent, _ = client
     offset = 10
     result = asyncio.run(
-        patch._execute_task_async(engine, lambda pp, tp: offset + pp * 2 + tp)
+        sglang._execute_task_async(engine, lambda pp, tp: offset + pp * 2 + tp)
     )
     assert result == [10, 11, 12, 13]
     assert len(sent) == 1
@@ -68,7 +68,7 @@ def test_msgpack_envelope_is_explicit(client):
         await socket.send_pyobj(envelope[1])
 
     io.async_sock_send = send
-    assert asyncio.run(patch._execute_task_async(engine, lambda **kw: 42)) == [42] * 4
+    assert asyncio.run(sglang._execute_task_async(engine, lambda **kw: 42)) == [42] * 4
     assert len(sent) == 1
 
 
@@ -76,7 +76,7 @@ def test_busy_generation_rejected_before_dispatch(client):
     engine, sent, _ = client
     engine.tokenizer_manager.rid_to_state["running"] = object()
     with pytest.raises(RuntimeError, match="idle generation"):
-        asyncio.run(patch._execute_task_async(engine, lambda **kw: None))
+        asyncio.run(sglang._execute_task_async(engine, lambda **kw: None))
     assert not sent
 
 
@@ -89,15 +89,15 @@ def test_rank_failure_is_drained_and_next_task_works(client):
         for pp in range(2):
             for tp in range(2):
                 manager._result_dispatcher(
-                    patch._WorkerResult(task.task_id, (0, pp, tp), error="broken")
+                    sglang._WorkerResult(task.task_id, (0, pp, tp), error="broken")
                 )
 
     async def run():
         manager.send_to_scheduler.send_pyobj = fail
         with pytest.raises(RuntimeError, match=r"rank \(0, 1, 1\).*broken"):
-            await patch._execute_task_async(engine, lambda: None)
+            await sglang._execute_task_async(engine, lambda: None)
         manager.send_to_scheduler.send_pyobj = original_send
-        assert await patch._execute_task_async(engine, lambda **kw: 7) == [7] * 4
+        assert await sglang._execute_task_async(engine, lambda **kw: 7) == [7] * 4
 
     asyncio.run(run())
 
@@ -116,11 +116,11 @@ def test_dp_result_contract(client, dp_attention):
                 for tp in tp_ranks:
                     rank = (dp, pp, tp)
                     manager._result_dispatcher(
-                        patch._WorkerResult(task.task_id, rank, pickle.dumps(rank))
+                        sglang._WorkerResult(task.task_id, rank, pickle.dumps(rank))
                     )
 
     manager.send_to_scheduler.send_pyobj = send
-    results = asyncio.run(patch._execute_task_async(engine, lambda: None))
+    results = asyncio.run(sglang._execute_task_async(engine, lambda: None))
     assert results == [
         (tp if dp_attention else 0, pp, tp) for pp in range(2) for tp in range(2)
     ]
@@ -153,19 +153,19 @@ def test_worker_payload_isolated_and_errors_returned(monkeypatch):
     monkeypatch.setattr(
         dist, "gather_object", lambda obj, results, **kw: results.__setitem__(0, obj)
     )
-    monkeypatch.setattr(patch, "_send", lambda socket, obj: replies.append(obj))
+    monkeypatch.setattr(sglang, "_send", lambda socket, obj: replies.append(obj))
 
     def callback(values, model, model_runner, model_context):
         values.append(model)
         assert model_context["scheduler"].tp_worker.model_runner is model_runner
         return values
 
-    task = patch._WorkerTask("task", cloudpickle.dumps((callback, {"values": []})))
-    patch._execute_worker_task(scheduler, task)
-    patch._execute_worker_task(scheduler, task)
+    task = sglang._WorkerTask("task", cloudpickle.dumps((callback, {"values": []})))
+    sglang._execute_worker_task(scheduler, task)
+    sglang._execute_worker_task(scheduler, task)
     assert [pickle.loads(r.payload) for r in replies] == [["model"], ["model"]]
-    bad = patch._WorkerTask("bad", cloudpickle.dumps((lambda **kw: 1 / 0, {})))
-    patch._execute_worker_task(scheduler, bad)
+    bad = sglang._WorkerTask("bad", cloudpickle.dumps((lambda **kw: 1 / 0, {})))
+    sglang._execute_worker_task(scheduler, bad)
     assert "ZeroDivisionError" in replies[-1].error
 
 
@@ -203,11 +203,11 @@ def test_pp_forwards_before_callback_exactly_once(monkeypatch):
 
     module.Scheduler = Scheduler
     monkeypatch.setattr(
-        patch, "_execute_worker_task", lambda *args: events.append("task")
+        sglang, "_execute_worker_task", lambda *args: events.append("task")
     )
-    patch._patch_scheduler()
+    sglang._install_scheduler_hooks()
     scheduler = Scheduler(None, SimpleNamespace(tokenizer_ipc_name="inproc://test"))
-    requests = [patch._WorkerTask("task", b"")]
+    requests = [sglang._WorkerTask("task", b"")]
     try:
         scheduler.process_input_requests(requests)
         scheduler._pp_send_pyobj_to_next_stage(requests, async_send=True)

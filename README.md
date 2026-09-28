@@ -117,11 +117,10 @@ SGLang inference engine weight update example:
 
 ```python
 from awex import WeightsReader, InferenceConfig
-from awex.engine.sglang import SGLangEngine
-from awex.sglang_patch import patch_sglang
+from awex.engine.sglang import SGLangEngine, install_sglang_worker_hooks
 import sglang as sgl
 
-patch_sglang()  # Call before creating the engine, on every node.
+install_sglang_worker_hooks()  # Call before creating the engine, on every node.
 sgl_engine = sgl.Engine(model_path="xxx", tp_size=2, random_seed=42)
 awex_config = InferenceConfig.from_sgl_engine(sgl_engine, comm_backend="nccl")
 inference_engine = SGLangEngine(awex_config, sgl_engine)
@@ -140,7 +139,7 @@ and `model_context`, including the scheduler and rank information. Async callers
 can await `sgl_engine.async_execute_task_in_model_worker(fn, **kwargs)`.
 
 Drain generation requests and stop submitting new requests while running tasks
-or updating weights. The patch supports the Python Engine API with one tokenizer
+or updating weights. The hooks support the Python Engine API with one tokenizer
 and the native multiprocessing launcher. Callbacks operate on the target model;
 updating separate speculative draft models is outside this interface.
 

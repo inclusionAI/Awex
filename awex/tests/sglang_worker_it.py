@@ -1,4 +1,4 @@
-"""GPU integration check for stock SGLang + AWEX's multiprocessing patch.
+"""GPU integration check for stock SGLang + AWEX's multiprocessing hooks.
 
 Run each topology in a fresh process, for example:
 python -m awex.tests.sglang_worker_it --tp 2 --pp 2 --model-dir /path/to/tiny-model
@@ -53,9 +53,8 @@ def main():
     from transformers import Qwen3Config
 
     from awex.config import InferenceConfig
-    from awex.engine.sglang import SGLangEngine
+    from awex.engine.sglang import SGLangEngine, install_sglang_worker_hooks
     from awex.meta.infer_meta_resolver import InferParamMetaResolver
-    from awex.sglang_patch import patch_sglang
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--tp", type=int, default=1)
@@ -77,8 +76,8 @@ def main():
         tie_word_embeddings=False,
         architectures=["Qwen3ForCausalLM"],
     ).save_pretrained(args.model_dir)
-    patch_sglang()
-    patch_sglang()  # Idempotent even when several AWEX callers configure it.
+    install_sglang_worker_hooks()
+    install_sglang_worker_hooks()  # Idempotent even when several AWEX callers configure it.
     engine = sglang.Engine(
         model_path=args.model_dir,
         load_format="dummy",

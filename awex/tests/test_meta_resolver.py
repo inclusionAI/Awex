@@ -712,10 +712,13 @@ def test_meta_resolver_with_real_engine():
     config = create_real_engine_config(model_path)
     import sglang as sgl
 
-    from awex.engine.sglang import SGLangEngine, extract_sgl_config
-    from awex.sglang_patch import patch_sglang
+    from awex.engine.sglang import (
+        SGLangEngine,
+        extract_sgl_config,
+        install_sglang_worker_hooks,
+    )
 
-    patch_sglang()
+    install_sglang_worker_hooks()
 
     try:
         sgl_engine = sgl.Engine(**extract_sgl_config(config), random_seed=42)
@@ -774,10 +777,13 @@ def test_meta_resolver_lite():
 
     import sglang as sgl
 
-    from awex.engine.sglang import SGLangEngine, extract_sgl_config
-    from awex.sglang_patch import patch_sglang
+    from awex.engine.sglang import (
+        SGLangEngine,
+        extract_sgl_config,
+        install_sglang_worker_hooks,
+    )
 
-    patch_sglang()
+    install_sglang_worker_hooks()
 
     try:
         sgl_engine = sgl.Engine(**extract_sgl_config(config), random_seed=42)
