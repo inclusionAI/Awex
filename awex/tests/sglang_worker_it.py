@@ -64,6 +64,7 @@ def main():
     parser.add_argument("--dp-attention", action="store_true")
     parser.add_argument("--model-dir", required=True)
     args = parser.parse_args()
+    print(f"SGLang source: {sglang.__file__}", flush=True)
     Qwen3Config(
         vocab_size=128,
         hidden_size=128,
@@ -94,7 +95,6 @@ def main():
         max_running_requests=4,
         chunked_prefill_size=128,
         disable_cuda_graph=True,
-        disable_overlap_schedule=True,
         random_seed=42,
         log_level="warning",
     )
