@@ -513,6 +513,10 @@ def get_weights_exchange_writer(train_engine) -> WeightExchangeWriter:
         from awex.writer.nccl_writer import NCCLWeightsWriter
 
         return NCCLWeightsWriter(train_engine)
+    elif train_engine.comm_backend == "mooncake":
+        from awex.writer.mooncake_writer import MooncakeWeightsWriter
+
+        return MooncakeWeightsWriter(train_engine)
     elif train_engine.comm_backend == "astate":
         from awex.writer.astate_writer import AStateWeightsWriter
 
