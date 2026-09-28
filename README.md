@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="docs/images/awex_logo.svg" alt="Awex logo" width="480">
+  <img src="docs/images/asystem_awex_logo.svg" alt="ASystem-Awex logo" width="480">
 </div>
 
 [![Build Status](https://img.shields.io/github/actions/workflow/status/inclusionAI/asystem-awex/ci.yml?branch=main&style=for-the-badge&label=GITHUB%20ACTIONS&logo=github)](https://github.com/inclusionAI/asystem-awex/actions/workflows/ci.yml)
