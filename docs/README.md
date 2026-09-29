@@ -14,13 +14,14 @@ The Awex weight exchange framework consists primarily of three components:
   <img width="95%" alt="Awex architecture" src="images/awex_arch.png"><br>
 </div>
 
-The core functional modules of weight exchange consist mainly of 5 parts:
+The core functional modules of weight exchange consist mainly of 6 parts:
 
 - **Unified training-inference weight convert**: Responsible for converting weights from training and inference engines with **different parallelism strategies and tensor layouts** into a **unified format** for subsequent weight metadata calculation and weight transmission;
 - **Global weight metadata calculation and exchange**: After converting training and inference weights into a unified format, collects all weight shard metadata from each worker and reports to Meta Server for subsequent weight transmission plan construction;
 - **P2P weight transmission execution plan**: Training and inference engines obtain global weight shard metadata from all workers, then separately construct peer-to-peer deterministic transfer plan for sending and receiving;
 - **NCCL weight transmission**: Uses NCCL's send/recv API for peer-to-peer weight transmission based on the constructed transmission plan;
 - **Mooncake weight transmission**: Executes shard transfers using one-sided reads over RDMA or CPU-buffer TCP;
+- **AState weight transmission**: Uses AState distributed tables to exchange weight shards through step-scoped put/get operations;
 
 ### (1) Unified Training-Inference Weight Convert
 
@@ -140,3 +141,16 @@ See the [installation and protocol settings](../README.md#mooncake-weight-transf
 The native TCP test covers transport correctness; model/framework and RDMA
 deployments require their own integration validation. Performance claims must
 identify the backend, protocol, versions, hardware, tensor sizes and timing scope.
+
+### (6) AState Weight Transmission
+
+Set `comm_backend="astate"` on both training and inference roles and install the
+AState runtime separately. Both roles still use the shared AWEX metadata server
+to exchange model and rank metadata.
+
+AWEX creates the `weights_exchange` remote table with each role's parallelism
+configuration. The training writer publishes converted weight shards through
+`multi_put(step_id, ...)`; inference workers load shards into their weight tensors
+through `multi_get(step_id, ...)`. Shard keys identify the parameter name, global
+shape and shard offset, allowing AState to handle the data movement. Each role
+calls `complete(step_id)` after finishing that update.

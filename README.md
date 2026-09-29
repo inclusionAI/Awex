@@ -37,13 +37,14 @@ The Awex weight exchange framework consists primarily of three components:
   <img width="85%" alt="Awex architecture" src="https://raw.githubusercontent.com/inclusionAI/awex/main/docs/images/awex_arch.png"><br>
 </div>
 
-The core modules of weight exchange consist mainly of 5 parts:
+The core modules of weight exchange consist mainly of 6 parts:
 
 - **Unified training-inference weight convert**: Responsible for converting weights from training and inference engines with **different parallelism strategies and tensor layouts** into a **unified format** for subsequent weight metadata calculation and weight transmission;
 - **Global weight metadata calculation and exchange**: After converting training and inference weights into a unified format, collects all weight shard metadata from each worker and reports to Meta Server for subsequent weight transmission plan construction;
 - **P2P weight transmission execution plan**: Training and inference engines obtain global weight shard metadata from all workers, then separately construct peer-to-peer deterministic transfer plan for sending and receiving;
 - **NCCL weight transmission**: Uses NCCL's send/recv API for peer-to-peer weight transmission based on the constructed transmission plan;
 - **Mooncake weight transmission**: Uses the same shard transfer plan with one-sided reads over RDMA or CPU-buffer TCP;
+- **AState weight transmission**: Uses AState distributed tables to exchange weight shards through step-scoped put/get operations;
 
 Awex also supports tensor-level validation of weights, comparing weights loaded through file system mode with those loaded through transmission mode at the tensor level for fine-grained comparison, ensuring the correctness of the transmission mode.
 
