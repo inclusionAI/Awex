@@ -16,7 +16,6 @@
 # under the License.
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
 
 import pytest
 import torch
@@ -39,7 +38,7 @@ class _ShardSpec:
 
 def _build_param_meta(
     name: str,
-    specs: List[_ShardSpec],
+    specs: list[_ShardSpec],
     global_numel: int,
     world_size: int,
 ) -> ParameterMeta:
@@ -79,7 +78,7 @@ def _build_param_meta(
     )
 
 
-def _op_signature(op: CommunicationOperation) -> Tuple:
+def _op_signature(op: CommunicationOperation) -> tuple:
     return (
         op.send_rank,
         op.recv_rank,
@@ -93,8 +92,8 @@ def _op_signature(op: CommunicationOperation) -> Tuple:
 
 def _run_inter_cpu_simulation(
     *,
-    train_specs: List[_ShardSpec],
-    infer_specs: List[_ShardSpec],
+    train_specs: list[_ShardSpec],
+    infer_specs: list[_ShardSpec],
     global_numel: int,
 ) -> None:
     infer_world_size = max(spec.rank for spec in infer_specs) + 1
@@ -126,7 +125,7 @@ def _run_inter_cpu_simulation(
     # Use non-zero deterministic values to make "unwritten" detection clear.
     ground_truth = torch.arange(1, global_numel + 1, dtype=torch.float32)
 
-    train_tensors: Dict[Tuple[int, Tuple[int, ...]], torch.Tensor] = {}
+    train_tensors: dict[tuple[int, tuple[int, ...]], torch.Tensor] = {}
     for spec in train_specs:
         send_rank = infer_world_size + spec.rank
         key = (send_rank, (spec.offset,))
@@ -134,8 +133,8 @@ def _run_inter_cpu_simulation(
             spec.offset : spec.offset + spec.length
         ].clone()
 
-    infer_tensors: Dict[Tuple[int, Tuple[int, ...]], torch.Tensor] = {}
-    infer_written_masks: Dict[Tuple[int, Tuple[int, ...]], torch.Tensor] = {}
+    infer_tensors: dict[tuple[int, tuple[int, ...]], torch.Tensor] = {}
+    infer_written_masks: dict[tuple[int, tuple[int, ...]], torch.Tensor] = {}
     for spec in infer_specs:
         key = (spec.rank, (spec.offset,))
         infer_tensors[key] = torch.zeros(spec.length, dtype=torch.float32)
@@ -204,8 +203,8 @@ def _run_inter_cpu_simulation(
     ],
 )
 def test_cpu_dummy_inter_plan_simulation(
-    train_specs: List[_ShardSpec],
-    infer_specs: List[_ShardSpec],
+    train_specs: list[_ShardSpec],
+    infer_specs: list[_ShardSpec],
     global_numel: int,
 ):
     _run_inter_cpu_simulation(

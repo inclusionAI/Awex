@@ -354,7 +354,7 @@ def test_bounded_transport_partitions_only_compatible_expert_ops():
     assert all(
         actual_plan is expected_plan and actual_p2p is expected_p2p
         for (actual_plan, actual_p2p), (expected_plan, expected_p2p) in zip(
-            flattened, operations
+            flattened, operations, strict=False
         )
     )
 

@@ -20,7 +20,8 @@ import pickle
 import threading
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 import torch
 
@@ -52,7 +53,7 @@ logger = logging.getLogger(__name__)
 def derive_expected_pp_ranks(
     infer_params_meta: Sequence[ParameterMeta],
     local_engine_rank: int,
-) -> List[int]:
+) -> list[int]:
     pp_ranks = set()
     for param in infer_params_meta:
         for shard in param.shards:
@@ -102,7 +103,7 @@ class FileWeightExchangeReader(WeightExchangeReader):
 
 
 class WeightsReader(WeightExchangeReader):
-    parameters_meta: List[ParameterMeta]
+    parameters_meta: list[ParameterMeta]
 
     def __init__(self, inference_engine, meta_resolver: InferParamMetaResolver = None):
         super().__init__(inference_engine)
@@ -151,7 +152,7 @@ class WeightsReader(WeightExchangeReader):
         self.timeout = 10000
         self.lock = threading.Lock()
         self.initialized = False
-        self.expected_pp_ranks: List[int] = []
+        self.expected_pp_ranks: list[int] = []
         logger.info(
             f"DP rank id: {self.engine_rank}, num_engines: {self.num_engines}, "
             f"engine_rank: {self.engine_rank}, infer_world_size: {self.infer_world_size}, "
@@ -250,7 +251,7 @@ class WeightsReader(WeightExchangeReader):
         num_engines: int,
         meta_server_addr: str,
         weights_comm_backend: str,
-        debug_mode_config: Dict[str, Any],
+        debug_mode_config: dict[str, Any],
         disable_pipeline: bool,
         enable_colocate_mode: bool,
         ipc_backend: str,
@@ -464,7 +465,7 @@ class WeightsReader(WeightExchangeReader):
     def _validate_weights(
         self,
         step_id,
-        dump_weights_list_for_validation: Optional[List[str]] = None,
+        dump_weights_list_for_validation: list[str] | None = None,
         dump_weights_dir_for_validation: str = ".",
         **kwargs,
     ):
@@ -634,10 +635,10 @@ class WorkerWeightsReader:
         engine_rank,
         num_engines,
         meta_server_addr: str,
-        parameters_meta: List[ParameterMeta],
-        training_params_meta: List[ParameterMeta],
+        parameters_meta: list[ParameterMeta],
+        training_params_meta: list[ParameterMeta],
         enable_debug_mode: bool = False,
-        debug_mode_config: Dict[str, Any] = None,
+        debug_mode_config: dict[str, Any] = None,
         disable_pipeline: bool = False,
         enable_colocate_mode: bool = False,
         ipc_backend: str = "cuda",
@@ -718,7 +719,7 @@ class WorkerWeightsReader:
         # Some converted parameters (e.g. split MoE gate/up on transposed layouts)
         # are non-contiguous views. NCCL recv requires contiguous tensors, so we
         # receive into contiguous buffers and copy back to these views after recv.
-        self._noncontiguous_parameter_views: Dict[str, torch.Tensor] = {}
+        self._noncontiguous_parameter_views: dict[str, torch.Tensor] = {}
 
         self.already_initialized = False
         self.destroy_pg_after_update = (
@@ -810,7 +811,7 @@ class WorkerWeightsReader:
     def read_tensors(
         self,
         step_id: int,
-        tensor_pairs: List,
+        tensor_pairs: list,
         **kwargs,
     ):
         pass

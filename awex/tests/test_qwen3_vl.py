@@ -168,7 +168,9 @@ def test_language_qkv_has_train_infer_name_and_value_parity(
     ]
     assert [name for name, _ in train_params] == expected_names
     assert [name for name, _ in infer_params] == expected_names
-    for (_, train_param), (_, infer_param) in zip(train_params, infer_params):
+    for (_, train_param), (_, infer_param) in zip(
+        train_params, infer_params, strict=False
+    ):
         torch.testing.assert_close(train_param, infer_param, rtol=0, atol=0)
 
 

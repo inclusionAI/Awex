@@ -15,7 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from typing import List, Tuple
 
 import torch
 from transformers import PretrainedConfig
@@ -72,7 +71,7 @@ class SGlangToHFWeightConverter:
 
     def _split_gate_up(
         self, name: str, parameter: torch.Tensor
-    ) -> List[Tuple[str, torch.Tensor]]:
+    ) -> list[tuple[str, torch.Tensor]]:
         split_dim = 0
         shape_split = parameter.shape[split_dim]
         stride = shape_split // 2
@@ -110,7 +109,7 @@ class SGlangToHFWeightConverter:
 
     def _convert_attention_param(
         self, name: str, parameter: torch.Tensor, layer_number: str
-    ) -> List[Tuple[str, torch.Tensor]]:
+    ) -> list[tuple[str, torch.Tensor]]:
         """Convert attention parameters from SGlang to HuggingFace format"""
         if "qkv_proj" in name or "query_key_value" in name:
             if self._fuse_qkv(name):
@@ -164,7 +163,7 @@ class SGlangToHFWeightConverter:
 
     def _convert_mlp_param(
         self, name: str, parameter: torch.Tensor, layer_number: str
-    ) -> List[Tuple[str, torch.Tensor]]:
+    ) -> list[tuple[str, torch.Tensor]]:
         """Convert MLP parameters from SGlang to HuggingFace format
         Input name example:
             mlp.gate_up_proj.weight
@@ -199,7 +198,7 @@ class SGlangToHFWeightConverter:
 
     def _convert_expert_tp_param(
         self, name: str, parameter: torch.Tensor, layer_number: str
-    ) -> List[Tuple[str, torch.Tensor]]:
+    ) -> list[tuple[str, torch.Tensor]]:
         """Convert expert parameters from SGlang to HuggingFace format.
 
         Input name example:
@@ -249,7 +248,7 @@ class SGlangToHFWeightConverter:
 
     def _convert_expert_moe_param(
         self, name: str, parameter: torch.Tensor, layer_number: str
-    ) -> List[Tuple[str, torch.Tensor]]:
+    ) -> list[tuple[str, torch.Tensor]]:
         """Convert expert parameters from SGlang to HuggingFace format."""
         # w13_weight shape: num_experts_per_partition, 2 * intermediate_size, hidden_size
         # w2_weight shape: num_experts_per_partition, hidden_size, intermediate_size
@@ -297,7 +296,7 @@ class SGlangToHFWeightConverter:
 
     def _convert_layer_norm_param(
         self, name: str, parameter: torch.Tensor, layer_number: str
-    ) -> List[Tuple[str, torch.Tensor]]:
+    ) -> list[tuple[str, torch.Tensor]]:
         """Convert layer normalization parameters"""
         if "input_layernorm" in name:
             return [(name, parameter)]
@@ -315,7 +314,7 @@ class SGlangToHFWeightConverter:
         self,
         name: str,
         parameter: torch.Tensor,
-    ) -> List[Tuple[str, torch.Tensor]]:
+    ) -> list[tuple[str, torch.Tensor]]:
         """Convert a parameter from SGlang format to HuggingFace format"""
         # Handle direct name mappings first
         direct_name_mapping = {
@@ -408,7 +407,7 @@ class LinearMLASGlangConverterMixin:
 
     def _convert_layer_norm_param(
         self, name: str, parameter: torch.Tensor, layer_number: str
-    ) -> List[Tuple[str, torch.Tensor]]:
+    ) -> list[tuple[str, torch.Tensor]]:
         base_name, has_scale_inv = normalize_scale_inv_name(name)
         direct_params = {
             "input_layernorm.weight",
@@ -425,7 +424,7 @@ class LinearMLASGlangConverterMixin:
 
     def _convert_attention_param(
         self, name: str, parameter: torch.Tensor, layer_number: str
-    ) -> List[Tuple[str, torch.Tensor]]:
+    ) -> list[tuple[str, torch.Tensor]]:
         base_name, has_scale_inv = normalize_scale_inv_name(name)
         name_mapping = {
             "attention.g_proj.weight": "attention.g_proj.weight",

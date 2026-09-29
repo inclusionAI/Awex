@@ -17,7 +17,7 @@
 
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 from awex import logging
 from awex.meta.weight_meta import (
@@ -70,27 +70,27 @@ class ParamMetaResolver(ABC):
         pass
 
     @abstractmethod
-    def get_parameters_meta(self) -> List[ParameterMeta]:
+    def get_parameters_meta(self) -> list[ParameterMeta]:
         """
         Returns the list of ParameterMeta objects for all parameters in the model.
         """
         pass
 
     @abstractmethod
-    def _get_params_raw_meta(self) -> List[Dict[str, Any]]:
+    def _get_params_raw_meta(self) -> list[dict[str, Any]]:
         pass
 
     @abstractmethod
     def _get_sharding_info(
-        self, name: str, rank_info: RankInfo, param_meta: Dict[str, Any]
-    ) -> Tuple[ShardingType, int, int]:
+        self, name: str, rank_info: RankInfo, param_meta: dict[str, Any]
+    ) -> tuple[ShardingType, int, int]:
         """
         Get the sharding information for a parameter.
         Returns (ShardingType, sharding_dim, num_shards).
         """
         pass
 
-    def _build_params_meta(self) -> List[ParameterMeta]:
+    def _build_params_meta(self) -> list[ParameterMeta]:
         """
         Build and return a list of ParameterMeta objects with global (unsharded) size, shape, and relative offset
         for each parameter in the model.

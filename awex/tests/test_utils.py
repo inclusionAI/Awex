@@ -17,7 +17,6 @@
 
 import os
 from dataclasses import dataclass
-from typing import Tuple
 
 import torch
 from transformers import AutoConfig, PretrainedConfig
@@ -61,7 +60,7 @@ def setup_modelscope_cache():
 
 def _resolve_local_model_dir_and_config(
     model_path: str,
-) -> Tuple[str, PretrainedConfig]:
+) -> tuple[str, PretrainedConfig]:
     """Resolve a model path to a local directory and HF config.
 
     This helper encapsulates the download logic shared between tests
@@ -146,7 +145,7 @@ def get_local_model_dir(model_path: str = "Qwen/Qwen2-1.5B") -> str:
 def megatron_model_from_hf(
     model_path: str = "Qwen/Qwen2-1.5B",
     use_mbridge: bool = True,
-) -> Tuple[list, PretrainedConfig]:
+) -> tuple[list, PretrainedConfig]:
     """Convert HF/ModelScope model to DCP format and load into Megatron.
 
     This function:

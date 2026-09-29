@@ -26,7 +26,7 @@ import socket
 import threading
 import time
 import traceback
-from typing import Any, Dict, Tuple, Union
+from typing import Any
 
 import requests
 from aiohttp import web
@@ -47,7 +47,7 @@ class MetaServer:
     def __init__(self, host: str = "localhost", port: int = 8080):
         self.host = host
         self.port = port
-        self.storage: Dict[str, Any] = {}
+        self.storage: dict[str, Any] = {}
         self.app = web.Application(
             middlewares=[self.error_handler],
             client_max_size=2 * 1024**3,  # 2GB max size
@@ -115,7 +115,7 @@ class MetaServer:
         """Get server port"""
         return self.port
 
-    def get_address_and_port(self) -> Tuple[str, int]:
+    def get_address_and_port(self) -> tuple[str, int]:
         """Get server address and port"""
         return self.host, self.port
 
@@ -389,7 +389,7 @@ def run_meta_server_process(host: str, port: int, result_queue):
         os._exit(1)
 
 
-def start_meta_server(host: str = "", port: int = 0) -> Tuple[str, int]:
+def start_meta_server(host: str = "", port: int = 0) -> tuple[str, int]:
     """
     Start a meta server in a subprocess using multiprocessing spawn, and return address and port
     """
@@ -512,7 +512,7 @@ def retry(
 
 
 class MetaServerClient:
-    def __init__(self, address: str, port: Union[int, str]):
+    def __init__(self, address: str, port: int | str):
         self._address = address
         self._port = int(port)
         self._base_url = f"http://{address}:{port}"

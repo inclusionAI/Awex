@@ -18,7 +18,7 @@
 import json
 import os
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from torch import distributed as dist
 from transformers import PretrainedConfig
@@ -44,7 +44,7 @@ class McoreParamMetaResolver(ParamMetaResolver):
         self,
         train_engine,
         hf_config: PretrainedConfig,
-        infer_conf: Dict,
+        infer_conf: dict,
     ):
         super().__init__(hf_config)
         self._train_engine = train_engine
@@ -67,7 +67,7 @@ class McoreParamMetaResolver(ParamMetaResolver):
         self._infer_conf = infer_conf
         self.infer_hf_config = infer_conf["hf_config"]
         self.num_hidden_layers = get_num_hidden_layers(self.infer_hf_config)
-        self._pp_stage_layer_id_map: Dict[Tuple[int, int], Dict[int, int]] = {}
+        self._pp_stage_layer_id_map: dict[tuple[int, int], dict[int, int]] = {}
         # yyyy_mm_dd_hh_mm_ss
         suffix = (
             f"_{rank}_{os.getpid()}_{datetime.now().strftime('%Y_%m_%d_%H_%M_%S')}.json"
@@ -104,21 +104,21 @@ class McoreParamMetaResolver(ParamMetaResolver):
     def get_model_arch_name(self) -> str:
         return self._model_arch_name
 
-    def get_parameters_meta(self) -> List[ParameterMeta]:
+    def get_parameters_meta(self) -> list[ParameterMeta]:
         """
         Returns the list of ParameterMeta objects for all parameters in the model.
         """
         return self._params_meta
 
-    def _get_params_raw_meta(self) -> List[Dict[str, Any]]:
+    def _get_params_raw_meta(self) -> list[dict[str, Any]]:
         return self._params_raw_meta
 
-    def get_pp_stage_layer_id_map(self) -> Dict[Tuple[int, int], Dict[int, int]]:
+    def get_pp_stage_layer_id_map(self) -> dict[tuple[int, int], dict[int, int]]:
         return self._pp_stage_layer_id_map
 
     def _collect_model_param_raw_info(
         self, convert_params=False, **kwargs
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         params_meta = []
         from awex.sharding.mcore_sharding import get_mcore_rank_info
 
@@ -181,7 +181,7 @@ class McoreParamMetaResolver(ParamMetaResolver):
                         }
                     )
         # use all gather to get the global meta
-        global_metadata: List[Dict[str, Any]] = [None] * dist.get_world_size()  # type: ignore
+        global_metadata: list[dict[str, Any]] = [None] * dist.get_world_size()  # type: ignore
         logger.info(
             f"Starting all_gather_object of {dist.get_world_size()}, current rank {dist.get_rank()}"
         )
@@ -196,8 +196,8 @@ class McoreParamMetaResolver(ParamMetaResolver):
         return global_metadata
 
     def _get_sharding_info(
-        self, name: str, rank_info: RankInfo, param_meta: Dict[str, Any]
-    ) -> Tuple[ShardingType, int, int]:
+        self, name: str, rank_info: RankInfo, param_meta: dict[str, Any]
+    ) -> tuple[ShardingType, int, int]:
         return self._sharding_strategy.get_sharding_strategy(
             name, rank_info=rank_info, param_meta=param_meta
         )
@@ -214,7 +214,7 @@ def _maybe_get_tf_config(models):
     return None
 
 
-def _extract_layer_id_from_param_name(name: str) -> Optional[int]:
+def _extract_layer_id_from_param_name(name: str) -> int | None:
     marker = ".layers."
     marker_idx = name.find(marker)
     if marker_idx < 0:
@@ -242,10 +242,10 @@ def _replace_layer_id_in_param_name(name: str, new_layer_id: int) -> str:
 
 
 def _build_pp_stage_layer_id_map(
-    global_metadata: List[Dict[str, Any]],
-) -> Dict[Tuple[int, int], Dict[int, int]]:
-    stage_local_ids: Dict[Tuple[int, int], set] = {}
-    pp_size: Optional[int] = None
+    global_metadata: list[dict[str, Any]],
+) -> dict[tuple[int, int], dict[int, int]]:
+    stage_local_ids: dict[tuple[int, int], set] = {}
+    pp_size: int | None = None
     for rank_meta in global_metadata:
         rank_info: RankInfo = rank_meta["rank_info"]
         if pp_size is None:
@@ -265,7 +265,7 @@ def _build_pp_stage_layer_id_map(
 
     vp_stages = sorted({stage_key[1] for stage_key in stage_local_ids})
     global_layer_id = 0
-    stage_map: Dict[Tuple[int, int], Dict[int, int]] = {}
+    stage_map: dict[tuple[int, int], dict[int, int]] = {}
     for vp_stage in vp_stages:
         for pp_rank in range(pp_size):
             key = (pp_rank, vp_stage)
@@ -281,9 +281,9 @@ def _build_pp_stage_layer_id_map(
 
 
 def _canonicalize_pp_layer_names_in_global_meta(
-    global_metadata: List[Dict[str, Any]],
-    pp_stage_layer_id_map: Dict[Tuple[int, int], Dict[int, int]],
-) -> List[Dict[str, Any]]:
+    global_metadata: list[dict[str, Any]],
+    pp_stage_layer_id_map: dict[tuple[int, int], dict[int, int]],
+) -> list[dict[str, Any]]:
     if not pp_stage_layer_id_map:
         return global_metadata
 

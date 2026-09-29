@@ -15,7 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from typing import Dict, List, Tuple
 
 import torch
 from transformers import PretrainedConfig
@@ -69,7 +68,7 @@ def _build_mcore_converter_bailing_moe():
             self,
             hf_config: PretrainedConfig,
             rank_info: RankInfo,
-            infer_conf: Dict,
+            infer_conf: dict,
             tf_config,
         ):
             super().__init__(hf_config, rank_info, infer_conf, tf_config=tf_config)
@@ -96,7 +95,7 @@ def _build_mcore_converter_bailing_moe():
 
         def convert_param(
             self, name: str, parameter: torch.Tensor, vp_stage: int = None
-        ) -> List[Tuple[str, torch.Tensor]]:
+        ) -> list[tuple[str, torch.Tensor]]:
             super_converted_params = super().convert_param(
                 name, parameter, vp_stage=vp_stage
             )

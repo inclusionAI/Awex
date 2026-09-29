@@ -10,7 +10,8 @@ import os
 import re
 import sys
 from collections import defaultdict
-from typing import Any, Iterable, Sequence
+from collections.abc import Iterable, Sequence
+from typing import Any
 
 _PLAN_NAME_RE = re.compile(
     r"(?P<kind>global|local)_communication_plan_(?P<role>train|infer)_(?P<rank>\d+)_(?P<pid>\d+)\.json$"
@@ -128,7 +129,7 @@ def _check_operation(op: dict[str, Any], idx: int) -> list[str]:
         if len(offset) != len(shard_shape):
             continue
         for dim, (off, ov, dim_size) in enumerate(
-            zip(offset, overlap_shape, shard_shape)
+            zip(offset, overlap_shape, shard_shape, strict=False)
         ):
             if int(off) < 0:
                 errors.append(f"op#{idx}: {key}[{dim}]={off} < 0")
@@ -149,7 +150,7 @@ def _check_operation(op: dict[str, Any], idx: int) -> list[str]:
                 f"op#{idx}: {slice_key} rank mismatch. len={len(slices)} expected={len(overlap_shape)}"
             )
             continue
-        for dim, (s, ov) in enumerate(zip(slices, overlap_shape)):
+        for dim, (s, ov) in enumerate(zip(slices, overlap_shape, strict=False)):
             slen = _slice_len(s)
             if slen is not None and int(slen) != int(ov):
                 errors.append(

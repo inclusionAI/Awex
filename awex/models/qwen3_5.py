@@ -39,7 +39,6 @@ shared-expert parameters from their names.
 """
 
 from types import SimpleNamespace
-from typing import List, Tuple
 
 import torch
 
@@ -76,7 +75,7 @@ class _Qwen3_5Layout:
     @staticmethod
     def split_rows(
         tensor: torch.Tensor, parts: int, description: str
-    ) -> Tuple[torch.Tensor, ...]:
+    ) -> tuple[torch.Tensor, ...]:
         """Split dim 0 evenly and fail with geometry-specific context."""
         if parts <= 0 or tensor.shape[0] % parts != 0:
             raise ValueError(
@@ -157,7 +156,7 @@ class _Qwen3_5Layout:
 
         blocks = []
         for query_shard, key_shard, value_shard in zip(
-            query_shards, key_shards, value_shards
+            query_shards, key_shards, value_shards, strict=False
         ):
             blocks.append(
                 torch.cat(
@@ -174,7 +173,7 @@ class _Qwen3_5Layout:
     @classmethod
     def split_gdn_input(
         cls, parameter: torch.Tensor, config, train_tp_size: int
-    ) -> Tuple[torch.Tensor, ...]:
+    ) -> tuple[torch.Tensor, ...]:
         """Undo Megatron's rank-local ``[Q,K,V,Z,B,A]`` GDN packing."""
         config = cls.text_config(config)
         qk_dim = int(config.linear_num_key_heads * config.linear_key_head_dim)
@@ -197,7 +196,7 @@ class _Qwen3_5Layout:
         pieces = [[] for _ in local_sizes]
         for rank_block in rank_blocks:
             for target, piece in zip(
-                pieces, torch.split(rank_block, local_sizes, dim=0)
+                pieces, torch.split(rank_block, local_sizes, dim=0), strict=False
             ):
                 target.append(piece)
         return tuple(torch.cat(part, dim=0) for part in pieces)
@@ -209,7 +208,7 @@ class _Qwen3_5Layout:
         config,
         train_tp_size: int,
         infer_tp_size: int,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Build SGLang's fused QKVZ and BA tensors in inference-rank order."""
         categories = cls.split_gdn_input(parameter, config, train_tp_size)
         shards = [
@@ -356,7 +355,7 @@ class SGlangToHFWeightConverterQwen3_5(SGlangToHFWeightConverterQwen3Moe):
     @torch.no_grad()
     def convert_param(
         self, name: str, parameter: torch.Tensor
-    ) -> List[Tuple[str, torch.Tensor]]:
+    ) -> list[tuple[str, torch.Tensor]]:
         name = name.replace("model.language_model.", "model.")
         if name.startswith(("mtp.", "model.mtp.")):
             # MTP is loaded with the inference model but remains frozen during

@@ -17,8 +17,8 @@
 
 import io
 import multiprocessing as mp
+from collections.abc import Callable, Iterable
 from multiprocessing.reduction import ForkingPickler
-from typing import Callable, Dict, Iterable, List, Tuple, Union
 
 import torch
 from packaging import version
@@ -81,7 +81,7 @@ def _device_to_uuid(device: int) -> str:
     return str(uuid)
 
 
-def _device_from_maybe_uuid(device_maybe_uuid: Union[int, str]) -> int:
+def _device_from_maybe_uuid(device_maybe_uuid: int | str) -> int:
     if isinstance(device_maybe_uuid, int):
         return device_maybe_uuid
 
@@ -184,8 +184,8 @@ def cuda_ipc_deserialize(data: bytes):
 
 @torch.no_grad()
 def group_tensors_by_shape_and_dtype(
-    tensors: List[torch.Tensor], max_tensor_size: int = 5 * 1024 * 1024 * 1024, **kwargs
-) -> Tuple[List[torch.Tensor], List[Dict]]:
+    tensors: list[torch.Tensor], max_tensor_size: int = 5 * 1024 * 1024 * 1024, **kwargs
+) -> tuple[list[torch.Tensor], list[dict]]:
     """
     Group tensors by shape and dtype, ensuring each group's total size is less than max_tensor_size.
     If one tensor is too large, it will be put into a separate group.
@@ -217,7 +217,7 @@ def group_tensors_by_shape_and_dtype(
     # where every parameter's values/indices have unique lengths. Observed on
     # Qwen3-30B: 4888 params -> 4636 groups, receiver cudaIpcOpenMemHandle
     # failing with driver OOM despite >50GB free.
-    tensor_groups: Dict[torch.dtype, List[Tuple[int, torch.Tensor]]] = {}
+    tensor_groups: dict[torch.dtype, list[tuple[int, torch.Tensor]]] = {}
     for i, tensor in enumerate(tensors):
         key = tensor.dtype
         if key not in tensor_groups:
@@ -299,8 +299,8 @@ def group_tensors_by_shape_and_dtype(
 
 @torch.no_grad()
 def reconstruct_tensors_from_groups(
-    tensor_groups: List[torch.Tensor], metadata: List[Dict]
-) -> List[torch.Tensor]:
+    tensor_groups: list[torch.Tensor], metadata: list[dict]
+) -> list[torch.Tensor]:
     """
     Reconstruct original tensors from grouped tensors and metadata.
 
@@ -355,7 +355,7 @@ def reconstruct_ipc_weights(
     serialized_weights: bytes,
     ipc_backend: str = "cuda",
     device_id=None,
-) -> Tuple[Dict[str, torch.Tensor], int]:
+) -> tuple[dict[str, torch.Tensor], int]:
     """Deserialize IPC-shared weight groups and rebuild the name->tensor map.
 
     Shared by the colocate receive paths (NCCL reader and the SGLang
@@ -380,10 +380,10 @@ def reconstruct_ipc_weights(
     device_util.synchronize(device_id=device_util.current_device())
     tensors = reconstruct_tensors_from_groups(group_shared, metadata)
     device_util.synchronize(device_id=device_util.current_device())
-    return dict(zip(names, tensors)), len(group_shared)
+    return dict(zip(names, tensors, strict=False)), len(group_shared)
 
 
-def release_tensors(tensors: Union[Iterable[torch.Tensor], torch.Tensor]):
+def release_tensors(tensors: Iterable[torch.Tensor] | torch.Tensor):
     if not isinstance(tensors, Iterable):
         tensors = [tensors]
     for tensor in tensors:

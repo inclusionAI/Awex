@@ -16,7 +16,6 @@
 # under the License.
 
 from abc import ABC, abstractmethod
-from typing import List, Optional
 
 from awex import logging
 
@@ -46,12 +45,12 @@ class Engine(ABC):
         self.global_step = global_step
 
     @abstractmethod
-    def release_memory_occupation(self, tags: Optional[List[str]] = None) -> None:
+    def release_memory_occupation(self, tags: list[str] | None = None) -> None:
         """Release memory occupied by the engine."""
         pass
 
     @abstractmethod
-    def resume_memory_occupation(self, tags: Optional[List[str]] = None) -> None:
+    def resume_memory_occupation(self, tags: list[str] | None = None) -> None:
         """Resume memory occupation for the engine."""
         pass
 
@@ -63,9 +62,7 @@ class InferenceEngine(Engine):
         pass
 
     @abstractmethod
-    def update_weights_from_disk(
-        self, model_path: str, load_format: Optional[str] = None
-    ):
+    def update_weights_from_disk(self, model_path: str, load_format: str | None = None):
         """Update weights from disk for inference engine."""
         pass
 

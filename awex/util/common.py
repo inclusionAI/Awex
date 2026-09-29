@@ -22,7 +22,6 @@ import pickle
 import socket
 import struct
 from enum import Enum
-from typing import List
 
 import torch
 
@@ -169,8 +168,8 @@ def compute_statistics(stage_history: dict, step_id: int, duration: float, stage
 
 
 def check_train_infer_params_meta(
-    training_params_meta: List,
-    infer_parameters_meta: List,
+    training_params_meta: list,
+    infer_parameters_meta: list,
     raise_exception: bool = False,
     strict_key_match: bool = False,
 ):

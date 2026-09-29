@@ -15,7 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from typing import List, Tuple
 
 import torch
 
@@ -42,7 +41,7 @@ class SGlangToHFWeightConverterQwen3Moe(SGlangToHFWeightConverter):
 
     def _convert_layer_norm_param(
         self, name: str, parameter: torch.Tensor, layer_number: str
-    ) -> List[Tuple[str, torch.Tensor]]:
+    ) -> list[tuple[str, torch.Tensor]]:
         # Qwen3 uses self_attn.{q,k}_norm; the base class only recognizes
         # the bailing-style {query,key}_layernorm names.
         if "q_norm" in name or "k_norm" in name:
@@ -78,7 +77,7 @@ def _build_mcore_converter_qwen3_moe():
 
         def _split_gqa_qkv(
             self, parameter: torch.Tensor
-        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
             hf = self.hf_config
             head_dim = self._gqa_head_dim()
             attn_tp = max(1, int(getattr(self.rank_info, "attn_tp_size", 1)))
@@ -117,7 +116,7 @@ def _build_mcore_converter_qwen3_moe():
 
         def _convert_attention_param(
             self, name: str, parameter: torch.Tensor, layer_number: str
-        ) -> List[Tuple[str, torch.Tensor]]:
+        ) -> list[tuple[str, torch.Tensor]]:
             if "self_attention.linear_qkv.weight" in name or (
                 "self_attention.linear_qkv.bias" in name
             ):

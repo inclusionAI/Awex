@@ -343,7 +343,9 @@ class BoundedMemoryNcclColocateStreamBatchTransport(NcclColocateStreamBatchTrans
         )
         packed_views = [
             flat_view.view_as(source)
-            for flat_view, source in zip(packed.split(numels), source_tensors)
+            for flat_view, source in zip(
+                packed.split(numels), source_tensors, strict=False
+            )
         ]
         with torch.no_grad():
             torch._foreach_copy_(packed_views, source_tensors)
@@ -366,7 +368,9 @@ class BoundedMemoryNcclColocateStreamBatchTransport(NcclColocateStreamBatchTrans
         numels = [tensor.numel() for tensor in destination_tensors]
         packed_views = [
             flat_view.view_as(destination)
-            for flat_view, destination in zip(packed.split(numels), destination_tensors)
+            for flat_view, destination in zip(
+                packed.split(numels), destination_tensors, strict=False
+            )
         ]
         with torch.no_grad():
             torch._foreach_copy_(destination_tensors, packed_views)

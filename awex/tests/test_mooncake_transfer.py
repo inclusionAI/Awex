@@ -144,7 +144,9 @@ def test_fanout_strided_views_repeated_step(transport):
                     TransferPlan(operations={2: [ops[i]]}),
                     42,
                 )
-                for i, (reader, target) in enumerate(zip(readers, targets))
+                for i, (reader, target) in enumerate(
+                    zip(readers, targets, strict=False)
+                )
             ]
             for receive in receives:
                 receive.result(timeout=5)

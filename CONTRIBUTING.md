@@ -42,7 +42,9 @@ pytest -v -s .
 
 ## Code Style
 
-Run all checks: `bash ci/format.sh --all`.
+Run all checks: `bash ci/format.sh --check`.
+
+Apply formatting and automatic fixes: `bash ci/format.sh --write`.
 
 ### License headers
 
@@ -52,10 +54,15 @@ docker run --rm -v $(pwd):/github/workspace ghcr.io/korandoru/hawkeye-native:v3 
 
 ### Python
 
+Use Python 3.10+ style: built-in generic types such as `list[str]`, `X | None`
+and `X | Y` annotations, abstract collection types from `collections.abc`, and
+`functools.cache` for unbounded caches. Specify `strict=` explicitly for `zip`
+calls according to the intended length-mismatch behavior.
+
 Install formatting tools:
 
 ```bash
-pip install ruff
+pip install -e ".[dev]"
 ```
 
 Format Python code:

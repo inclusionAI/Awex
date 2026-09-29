@@ -8,7 +8,6 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Optional
 
 
 def _apply_device_backend(device_backend: str) -> str:
@@ -64,7 +63,7 @@ def _load_manifest(manifest_path: Path) -> dict[str, dict]:
     return {entry["name"]: entry for entry in entries}
 
 
-def _parse_devices(arg: Optional[str]) -> List[int]:
+def _parse_devices(arg: str | None) -> list[int]:
     if not arg:
         return []
     return [int(x) for x in arg.split(",") if x.strip()]
@@ -95,8 +94,8 @@ def _setup_distributed():
 
 
 def _pick_train_devices(
-    world_size: int, visible_devices: List[int], train_devices_arg: Optional[str]
-) -> List[int]:
+    world_size: int, visible_devices: list[int], train_devices_arg: str | None
+) -> list[int]:
     train_devices = _parse_devices(train_devices_arg)
     if not train_devices:
         if len(visible_devices) < world_size:

@@ -15,7 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from typing import Dict, List, Tuple
 
 import torch
 from transformers import PretrainedConfig
@@ -50,7 +49,7 @@ def _build_mcore_converter_bailing_moe_linear():
             self,
             hf_config: PretrainedConfig,
             rank_info,
-            infer_conf: Dict,
+            infer_conf: dict,
             tf_config,
         ):
             super().__init__(hf_config, rank_info, infer_conf, tf_config=tf_config)
@@ -63,22 +62,22 @@ def _build_mcore_converter_bailing_moe_linear():
 
         def _convert_lm_head_param(
             self, name: str, parameter: torch.Tensor
-        ) -> List[Tuple[str, torch.Tensor]]:
+        ) -> list[tuple[str, torch.Tensor]]:
             return [("lm_head.weight", parameter.to(torch.float32))]
 
         def _convert_expert_bias_param(
             self, name: str, parameter: torch.Tensor, layer_number: str
-        ) -> Tuple[str, torch.Tensor]:
+        ) -> tuple[str, torch.Tensor]:
             if "expert_bias" in name:
                 return ("mlp.gate.expert_bias", parameter.to(torch.float32))
             return super()._convert_expert_bias_param(name, parameter, layer_number)
 
         def _post_process_linear_mla_params(
-            self, converted_params: List[Tuple[str, torch.Tensor]]
-        ) -> List[Tuple[str, torch.Tensor]]:
+            self, converted_params: list[tuple[str, torch.Tensor]]
+        ) -> list[tuple[str, torch.Tensor]]:
             if self.quant_method != "fp8":
                 return converted_params
-            quantized_params: List[Tuple[str, torch.Tensor]] = []
+            quantized_params: list[tuple[str, torch.Tensor]] = []
             for param_name, param in converted_params:
                 should_quantize = (
                     ".experts." in param_name
@@ -102,7 +101,7 @@ class SGlangToHFWeightConverterBailingMoeLinear(
 ):
     def convert_param(
         self, name: str, parameter: torch.Tensor
-    ) -> List[Tuple[str, torch.Tensor]]:
+    ) -> list[tuple[str, torch.Tensor]]:
         # SGLang's BailingMoe names the input embedding ``word_embeddings``,
         # while the canonical HF name (and the train-side mcore converter output)
         # is ``embed_tokens``. Normalize here so the transfer-plan key sets on

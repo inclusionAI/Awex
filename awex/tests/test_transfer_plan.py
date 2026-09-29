@@ -15,7 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from typing import Tuple
 
 import pytest
 import torch
@@ -535,8 +534,8 @@ class TestTransferPlanBuilder:
 
     def _create_test_shard_meta(
         self,
-        global_offset: Tuple[int, ...] = (0, 0),
-        shape: Tuple[int, ...] = (2, 2),
+        global_offset: tuple[int, ...] = (0, 0),
+        shape: tuple[int, ...] = (2, 2),
         global_rank: int = 0,
         dtype: torch.dtype = torch.float32,
         cp_rank: int | None = None,
@@ -581,7 +580,7 @@ class TestTransferPlanBuilder:
         )
 
     def _create_test_parameter_meta(
-        self, name: str, global_shape: Tuple[int, ...] = (4, 4)
+        self, name: str, global_shape: tuple[int, ...] = (4, 4)
     ) -> ParameterMeta:
         """Helper method to create test ParameterMeta."""
         shard = self._create_test_shard_meta(

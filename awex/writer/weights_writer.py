@@ -20,7 +20,6 @@ import os
 import threading
 import time
 from abc import ABC, abstractmethod
-from typing import List
 
 import torch
 import torch.distributed as dist
@@ -200,7 +199,7 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
             result = [None]
             dist.broadcast_object_list(result, src=0)
             infer_params_meta_binary = result[0]
-        self.infer_params_meta: List[ParameterMeta] = from_binary(
+        self.infer_params_meta: list[ParameterMeta] = from_binary(
             infer_params_meta_binary
         )
         logger.info("Finished getting inference parameters meta from meta server")
@@ -505,7 +504,7 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
     def finish_step(self, step_id):
         pass
 
-    def write_tensors(self, step_id, tensor_pairs: List, **kwargs):
+    def write_tensors(self, step_id, tensor_pairs: list, **kwargs):
         pass
 
 
