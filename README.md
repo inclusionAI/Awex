@@ -92,6 +92,52 @@ For development with additional tools:
 pip install -e ".[dev]"
 ```
 
+### Mooncake Weight Transfer
+
+Install the optional [Mooncake Transfer Engine](https://github.com/kvcache-ai/Mooncake)
+on every training and inference worker:
+
+```bash
+pip install -e ".[mooncake]"
+```
+
+Set `comm_backend="mooncake"` in both the training configuration and
+`InferenceConfig`, with the same AWEX `meta_server_addr`. Existing model conversion
+and shard planning also apply to this backend. No additional distributed process
+group or external Mooncake metadata server is needed: AWEX exchanges buffer
+addresses and completion notifications, while Mooncake transfers the tensor data.
+
+Configure each worker process through these environment variables:
+
+| Variable                 | Default                  | Purpose                                                                                                          |
+| ------------------------ | ------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `AWEX_MOONCAKE_PROTOCOL` | `rdma`                   | `rdma` for CPU/CUDA memory on RDMA hosts; `tcp` for host-buffer transfers. Set the same protocol on all workers. |
+| `AWEX_MOONCAKE_HOST`     | AWEX's detected local IP | Local address reachable by other workers. Each engine allocates its own RPC port.                                |
+| `AWEX_MOONCAKE_DEVICE`   | Empty                    | Mooncake RDMA device filter, such as `mlx5_0,mlx5_1`.                                                            |
+
+The backend supports CPU and CUDA workers. RDMA requires a compatible Mooncake
+build, network configuration, and GPU memory registration support for CUDA buffers.
+TCP stages through CPU memory. With `enable_colocate_mode=True`, training snapshots
+also use CPU memory so training weights can be offloaded before inference resumes.
+The existing engine offload/resume hooks must be implemented for colocated use.
+
+Training keeps a contiguous snapshot of each distinct outgoing slice until all
+its readers acknowledge completion. Allow memory for these snapshots (on CPU for
+TCP or colocated updates, otherwise on the source device), in addition to converted
+weights. Inference stages one slice at a time and copies it into the target view,
+including non-contiguous layouts. All participating ranks must execute updates in
+the same order with matching step IDs.
+
+A failed exchange aborts further updates. Published buffers remain registered on
+timeouts or transfer errors because remote access may still be in flight; restart
+the job with a fresh AWEX metadata server instead of retrying in the same workers.
+
+The optional native TCP smoke test runs when Mooncake is installed:
+
+```bash
+pytest awex/tests/test_mooncake_transfer.py -k native_tcp_loopback
+```
+
 ## Quick Start
 
 Awex is a pure Python library that can be installed and used with one command, supporting Python 3.8 and above.

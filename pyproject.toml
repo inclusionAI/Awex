@@ -36,6 +36,7 @@ requires-python = ">=3.8"
 dependencies = ["cloudpickle>=2.2"]
 
 [project.optional-dependencies]
+mooncake = ["mooncake-transfer-engine"]
 dev = [
     "modelscope>=1.9.0",  # For faster download models
 ]

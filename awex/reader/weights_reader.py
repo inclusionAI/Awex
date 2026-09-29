@@ -275,10 +275,18 @@ class WeightsReader(WeightExchangeReader):
             from awex.reader.nccl_reader import NCCLWorkerWeightsReader
 
             cls = NCCLWorkerWeightsReader
+        elif weights_comm_backend == "mooncake":
+            from awex.reader.mooncake_reader import MooncakeWorkerWeightsReader
+
+            cls = MooncakeWorkerWeightsReader
         elif weights_comm_backend == "astate":
             from awex.reader.astate_reader import AStateWorkerWeightsReader
 
             cls = AStateWorkerWeightsReader
+        else:
+            raise ValueError(
+                f"Unsupported weights exchange backend: {weights_comm_backend}"
+            )
         scheduler.awes_weights_reader = cls(
             engine_name=infer_conf.get("engine_name", "sglang"),
             model=model,
