@@ -15,7 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from typing import List
 
 from awex import logging
 from awex.writer.weights_writer import WeightsExchangeShardingWriter
@@ -57,7 +56,7 @@ class AStateWeightsWriter(WeightsExchangeShardingWriter):
             f"Finished initializing AStateWeightsWriter for rank {self.rank_info.global_rank}"
         )
 
-    def write_tensors(self, step_id, tensor_pairs: List, **kwargs):
+    def write_tensors(self, step_id, tensor_pairs: list, **kwargs):
         from astate.utils import create_sharded_key
 
         astate_tensor_pairs = []

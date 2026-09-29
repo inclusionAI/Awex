@@ -19,7 +19,7 @@
 
 import re
 from types import SimpleNamespace
-from typing import Any, List, Tuple
+from typing import Any
 
 import torch
 
@@ -134,7 +134,7 @@ class Qwen3VLSGlangToHFWeightConverter(SGlangToHFWeightConverterQwen3Moe):
     @torch.no_grad()
     def convert_param(
         self, name: str, parameter: torch.Tensor
-    ) -> List[Tuple[str, torch.Tensor]]:
+    ) -> list[tuple[str, torch.Tensor]]:
         if name.startswith("visual."):
             hf_name = f"model.{name}".replace(".attn.qkv_proj.", ".attn.qkv.")
             return [(hf_name, parameter)]
@@ -187,7 +187,7 @@ def _build_mcore_converter_qwen3_vl():
 
         def _convert_vision_qkv(
             self, layer_number: str, name: str, parameter: torch.Tensor
-        ) -> List[Tuple[str, torch.Tensor]]:
+        ) -> list[tuple[str, torch.Tensor]]:
             from awex.converter.mcore_converter import (
                 convert_qkv_bias_along_tp_attention,
                 convert_qkv_weight_along_tp_attention,
@@ -230,7 +230,7 @@ def _build_mcore_converter_qwen3_vl():
 
         def _convert_vision_param(
             self, name: str, parameter: torch.Tensor
-        ) -> List[Tuple[str, torch.Tensor]]:
+        ) -> list[tuple[str, torch.Tensor]]:
             if name in _VISION_DIRECT_NAMES:
                 return [(_VISION_DIRECT_NAMES[name], parameter)]
 
@@ -280,7 +280,7 @@ def _build_mcore_converter_qwen3_vl():
         @torch.no_grad()
         def convert_param(
             self, name: str, parameter: torch.Tensor, vp_stage: int = None
-        ) -> List[Tuple[str, torch.Tensor]]:
+        ) -> list[tuple[str, torch.Tensor]]:
             name = name.replace("module.", "")
             if name.startswith("vision_model."):
                 return self._convert_vision_param(name, parameter)

@@ -21,8 +21,8 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable, Iterable
 from glob import glob
-from typing import Callable, Iterable
 
 import torch
 

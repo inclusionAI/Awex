@@ -17,7 +17,7 @@
 
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import torch.distributed as dist
 
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 class MegatronEngine(TrainingEngine):
-    def __init__(self, config: Dict[str, Any], hf_config, model):
+    def __init__(self, config: dict[str, Any], hf_config, model):
         super().__init__(hf_config)
         self.config = config
         logger.info(f"config {self.config}")
@@ -80,7 +80,7 @@ class MegatronEngine(TrainingEngine):
         if self.enable_colocate_mode:
             self.release_memory_occupation()
 
-    def release_memory_occupation(self, tags: Optional[List[str]] = None) -> None:
+    def release_memory_occupation(self, tags: list[str] | None = None) -> None:
         """Release memory occupation.
 
         tags: optimizer, weights, default is both
@@ -89,7 +89,7 @@ class MegatronEngine(TrainingEngine):
     def release_grad_memory(self, empty_cache=True):
         raise NotImplementedError
 
-    def resume_memory_occupation(self, tags: Optional[List[str]] = None) -> None:
+    def resume_memory_occupation(self, tags: list[str] | None = None) -> None:
         """Resume memory occupation.
 
         tags: optimizer, weights, default is both

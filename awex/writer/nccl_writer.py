@@ -304,7 +304,9 @@ class NCCLWeightsWriter(WeightsExchangeShardingWriter):
     def _send_recv_one_by_one(self, p2p_op_list, send_traj_list):
         # it's useful for debug or insufficient memory if infer with closed sleep mode
         # it's useful for the hardware diff scene which using batch_send_recv will be error,such as 910B2 and 910B1
-        for (param_name, send_rank), op_dist in zip(send_traj_list, p2p_op_list):
+        for (param_name, send_rank), op_dist in zip(
+            send_traj_list, p2p_op_list, strict=False
+        ):
             logger.debug(
                 f"Writer {self.transfer_rank} start to send to {send_rank} for {param_name}"
             )

@@ -16,7 +16,6 @@
 # under the License.
 
 import os
-from typing import Dict, List, Optional, Tuple
 
 import torch
 from megatron.core.transformer.transformer_config import TransformerConfig
@@ -46,11 +45,11 @@ def _cfg_get(tf_config, key: str, default=None):
 
 
 def _normalize_pp_stage_layer_id_map(
-    raw_map: Optional[Dict],
-) -> Dict[Tuple[int, int], Dict[int, int]]:
+    raw_map: dict | None,
+) -> dict[tuple[int, int], dict[int, int]]:
     if not raw_map:
         return {}
-    normalized: Dict[Tuple[int, int], Dict[int, int]] = {}
+    normalized: dict[tuple[int, int], dict[int, int]] = {}
     for raw_key, raw_layer_map in raw_map.items():
         if isinstance(raw_key, tuple) and len(raw_key) == 2:
             pp_rank = int(raw_key[0])
@@ -71,7 +70,7 @@ def _normalize_pp_stage_layer_id_map(
                 "Invalid pp stage map value, expected dict: "
                 f"key={raw_key}, value_type={type(raw_layer_map)}"
             )
-        stage_map: Dict[int, int] = {}
+        stage_map: dict[int, int] = {}
         for local_layer_id, global_layer_id in raw_layer_map.items():
             stage_map[int(local_layer_id)] = int(global_layer_id)
         normalized[(pp_rank, vp_stage)] = stage_map
@@ -89,7 +88,7 @@ def _is_decoder_layer(layer_type) -> bool:
 
 def _normalize_pipeline_layout(
     pipeline_layout, pp_size: int
-) -> Tuple[List[List[List[object]]], int]:
+) -> tuple[list[list[list[object]]], int]:
     layout = getattr(pipeline_layout, "layout", pipeline_layout)
     if not isinstance(layout, list) or not layout:
         raise ValueError("pipeline_model_parallel_layout must be a non-empty list")
@@ -131,7 +130,7 @@ def _normalize_pipeline_layout(
 
 def _build_stage_layer_counts_from_layout(
     pipeline_layout, pp_size: int
-) -> List[List[int]]:
+) -> list[list[int]]:
     layout_2d, vp_size = _normalize_pipeline_layout(pipeline_layout, pp_size)
     stage_counts = [[0 for _ in range(vp_size)] for _ in range(pp_size)]
     for pp_rank in range(pp_size):
@@ -146,7 +145,7 @@ def _build_stage_layer_counts_from_layout(
 
 def _build_stage_layer_counts_from_split_config(
     num_hidden_layers: int, rank_info: RankInfo, tf_config
-) -> List[List[int]]:
+) -> list[list[int]]:
     pp_size = max(int(rank_info.pp_size), 1)
     pp_ranks = list(range(pp_size))
     pp_rank_last = pp_size - 1
@@ -273,7 +272,7 @@ def _resolve_pp_stage_global_layer_ids(
     hf_config: PretrainedConfig,
     tf_config: TransformerConfig,
     vp_stage: int = None,
-) -> List[int]:
+) -> list[int]:
     num_hidden_layers = getattr(hf_config, "num_hidden_layers", None)
     if num_hidden_layers is None:
         num_hidden_layers = _cfg_get(tf_config, "num_layers", None)
@@ -330,7 +329,7 @@ def _process_mcore_pp_name(
     hf_config: PretrainedConfig,
     tf_config: TransformerConfig,
     vp_stage: int = None,
-    pp_stage_layer_id_map: Optional[Dict[Tuple[int, int], Dict[int, int]]] = None,
+    pp_stage_layer_id_map: dict[tuple[int, int], dict[int, int]] | None = None,
 ) -> str:
     """
     Process the name of a parameter to remove the pipeline parallel rank.
@@ -369,7 +368,7 @@ class McoreToHFWeightConverter:
         self,
         hf_config: PretrainedConfig,
         rank_info: RankInfo,
-        infer_conf: Dict,
+        infer_conf: dict,
         tf_config: TransformerConfig,
     ):
         from awex.util.mindspeed import ensure_mindspeed_patched
@@ -409,7 +408,7 @@ class McoreToHFWeightConverter:
             return config.get(key, default)
         return getattr(config, key, default)
 
-    def _resolve_infer_device_backend(self, infer_conf: Dict) -> str:
+    def _resolve_infer_device_backend(self, infer_conf: dict) -> str:
         conf_backend = infer_conf.get("device_backend")
         if isinstance(conf_backend, str):
             conf_backend = conf_backend.strip().lower()
@@ -471,7 +470,7 @@ class McoreToHFWeightConverter:
 
     def _convert_attention_param(
         self, name: str, parameter: torch.Tensor, layer_number: str
-    ) -> List[Tuple[str, torch.Tensor]]:
+    ) -> list[tuple[str, torch.Tensor]]:
         if "self_attention.linear_qkv.weight" in name:
             if self._fuse_qkv(name):
                 # Keep fused format
@@ -529,8 +528,8 @@ class McoreToHFWeightConverter:
 
     def _convert_linear(
         self, name: str, parameter: torch.Tensor
-    ) -> List[Tuple[str, torch.Tensor]]:
-        converted: List[Tuple[str, torch.Tensor]]
+    ) -> list[tuple[str, torch.Tensor]]:
+        converted: list[tuple[str, torch.Tensor]]
         if "linear_fc1.weight" in name:
             if self._fuse_gate_up_proj(name):
                 converted = [("gate_up_proj.weight", parameter)]
@@ -583,7 +582,7 @@ class McoreToHFWeightConverter:
 
     def _convert_gate(
         self, name: str, parameter: torch.Tensor
-    ) -> Tuple[str, torch.Tensor]:
+    ) -> tuple[str, torch.Tensor]:
         assert "router" in name or "gate." in name, (
             f"Unsupported parameter name: {name}"
         )
@@ -591,7 +590,7 @@ class McoreToHFWeightConverter:
 
     def _convert_mlp_param(
         self, name: str, parameter: torch.Tensor, layer_number: str
-    ) -> List[Tuple[str, torch.Tensor]]:
+    ) -> list[tuple[str, torch.Tensor]]:
         assert "attention" not in name, (
             f"{name} shouble be hanled in _convert_attention_param"
         )
@@ -648,7 +647,7 @@ class McoreToHFWeightConverter:
 
     def _convert_expert_bias_param(
         self, name: str, parameter: torch.Tensor, layer_number: str
-    ) -> Tuple[str, torch.Tensor]:
+    ) -> tuple[str, torch.Tensor]:
         """Convert bias parameters"""
         if "expert_bias" in name:
             # SGLang keeps the auxiliary router expert bias in fp32 even when
@@ -667,7 +666,7 @@ class McoreToHFWeightConverter:
 
     def _convert_lm_head_param(
         self, name: str, parameter: torch.Tensor
-    ) -> List[Tuple[str, torch.Tensor]]:
+    ) -> list[tuple[str, torch.Tensor]]:
         if getattr(self.hf_config, "norm_head", False):
             import torch.nn.functional as F
 
@@ -692,7 +691,7 @@ class McoreToHFWeightConverter:
     @torch.no_grad()
     def convert_param(
         self, name: str, parameter: torch.Tensor, vp_stage: int = None
-    ) -> List[Tuple[str, torch.Tensor]]:
+    ) -> list[tuple[str, torch.Tensor]]:
         name = name.replace("module.", "")
         name = _process_mcore_pp_name(
             name,
@@ -744,7 +743,7 @@ class LinearMLAMcoreConverterMixin:
         self,
         hf_config: PretrainedConfig,
         rank_info: RankInfo,
-        infer_conf: Dict,
+        infer_conf: dict,
         tf_config: TransformerConfig,
     ):
         super().__init__(hf_config, rank_info, infer_conf, tf_config=tf_config)
@@ -766,11 +765,11 @@ class LinearMLAMcoreConverterMixin:
             or getattr(hf_config, "group_norm_size", None)
         )
         self.fuse_qkv_a_proj = getattr(hf_config, "q_lora_rank", None) is not None
-        self.qkv_a_proj_cache: Dict[str, Dict[str, torch.Tensor]] = {}
+        self.qkv_a_proj_cache: dict[str, dict[str, torch.Tensor]] = {}
 
     def _post_process_linear_mla_params(
-        self, converted_params: List[Tuple[str, torch.Tensor]]
-    ) -> List[Tuple[str, torch.Tensor]]:
+        self, converted_params: list[tuple[str, torch.Tensor]]
+    ) -> list[tuple[str, torch.Tensor]]:
         return converted_params
 
     def _is_linear_layer(self, layer_number: int) -> bool:
@@ -791,7 +790,7 @@ class LinearMLAMcoreConverterMixin:
 
     def _convert_lightning_attention_param(
         self, name: str, parameter: torch.Tensor, layer_number: str
-    ) -> List[Tuple[str, torch.Tensor]]:
+    ) -> list[tuple[str, torch.Tensor]]:
         if "self_attention.pre_gate_norm.te_norm.weight" in name:
             return []
         if "self_attention.pre_gate_norm.weight" in name:
@@ -826,7 +825,7 @@ class LinearMLAMcoreConverterMixin:
 
     def _try_fuse_qkv_a_proj(
         self, target_name: str, parameter: torch.Tensor, layer_number: str
-    ) -> List[Tuple[str, torch.Tensor]]:
+    ) -> list[tuple[str, torch.Tensor]]:
         layer_cache = self.qkv_a_proj_cache.setdefault(layer_number, {})
         if target_name.endswith("kv_a_proj_with_mqa.weight"):
             cache_key = "kv_a_proj"
@@ -864,7 +863,7 @@ class LinearMLAMcoreConverterMixin:
 
     def _convert_mla_attention_param(
         self, name: str, parameter: torch.Tensor, layer_number: str
-    ) -> List[Tuple[str, torch.Tensor]]:
+    ) -> list[tuple[str, torch.Tensor]]:
         name_mapping = {
             "input_layernorm.weight": "input_layernorm.weight",
             "self_attention.linear_proj.weight": "attention.dense.weight",
@@ -909,7 +908,7 @@ class LinearMLAMcoreConverterMixin:
 
     def _convert_attention_param(
         self, name: str, parameter: torch.Tensor, layer_number: str
-    ) -> List[Tuple[str, torch.Tensor]]:
+    ) -> list[tuple[str, torch.Tensor]]:
         # When PP stage layer ID map is unavailable (during meta resolution),
         # local layer IDs may not reflect the true global position. Fall back
         # to detecting layer type from the parameter name itself.
@@ -924,7 +923,7 @@ class LinearMLAMcoreConverterMixin:
     @torch.no_grad()
     def convert_param(
         self, name: str, parameter: torch.Tensor, vp_stage: int = None
-    ) -> List[Tuple[str, torch.Tensor]]:
+    ) -> list[tuple[str, torch.Tensor]]:
         name = name.replace("module.", "")
         name = _process_mcore_pp_name(
             name,
@@ -1207,7 +1206,7 @@ def convert_qkv_weight_along_tp_attention(
         value_shards = value.chunk(infer_atten_tp_size, dim=0)
     qkv_tp_groups = []
     for query_shard, key_shard, value_shard in zip(
-        query_shards, key_shards, value_shards
+        query_shards, key_shards, value_shards, strict=False
     ):
         qkv_tp_groups.append(query_shard)
         qkv_tp_groups.append(key_shard)
@@ -1334,7 +1333,7 @@ def convert_qkv_bias_along_tp_attention(
         value_shards = value.chunk(infer_atten_tp_size, dim=0)
     qkv_tp_groups = []
     for query_shard, key_shard, value_shard in zip(
-        query_shards, key_shards, value_shards
+        query_shards, key_shards, value_shards, strict=False
     ):
         qkv_tp_groups.append(query_shard)
         qkv_tp_groups.append(key_shard)
@@ -1352,7 +1351,7 @@ def convert_qkv_bias_along_tp_attention(
     return merged
 
 
-def get_mcore_model_parameters(model) -> Dict[str, torch.Tensor]:
+def get_mcore_model_parameters(model) -> dict[str, torch.Tensor]:
     params_dict = dict(model.named_parameters())
     state_dict = model.state_dict()
     for name, param in state_dict.items():

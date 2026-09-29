@@ -17,7 +17,7 @@
 
 import asyncio
 import inspect
-from typing import Any, Dict, Optional
+from typing import Any
 
 from awex import logging
 from awex.config import InferenceConfig
@@ -37,18 +37,18 @@ class AwexVLLMServerAdapter:
         num_engines: int = 1,
         comm_backend: str = "file",
         enable_debug_mode: bool = False,
-        debug_mode_config: Optional[Dict[str, Any]] = None,
+        debug_mode_config: dict[str, Any] | None = None,
         disable_weights_exchange_pipeline: bool = False,
         enable_colocate_mode: bool = False,
         weights_exchange_ipc_backend: str = "cuda",
         weights_comm_nccl_group_size: int = 1,
-        nnodes: Optional[int] = None,
-        node_rank: Optional[int] = None,
+        nnodes: int | None = None,
+        node_rank: int | None = None,
         weights_validation_steps: int = 0,
         validate_weights_every_n_steps: int = 1,
-        dump_weights_list_for_validation: Optional[list[str]] = None,
-        dump_weights_dir_for_validation: Optional[str] = None,
-        loop: Optional[asyncio.AbstractEventLoop] = None,
+        dump_weights_list_for_validation: list[str] | None = None,
+        dump_weights_dir_for_validation: str | None = None,
+        loop: asyncio.AbstractEventLoop | None = None,
     ):
         self._engine_client = engine_client
         self._engine_core = engine_client.engine_core
@@ -160,9 +160,9 @@ class AwexVLLMServerAdapter:
     def _collective_rpc(
         self,
         method: str,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
         args: tuple = (),
-        kwargs: Optional[dict] = None,
+        kwargs: dict | None = None,
     ):
         if hasattr(self._engine_client, "collective_rpc"):
             fn = self._engine_client.collective_rpc
@@ -176,9 +176,9 @@ class AwexVLLMServerAdapter:
     def _collective_rpc_all_dp_cores(
         self,
         method: str,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
         args: tuple = (),
-        kwargs: Optional[dict] = None,
+        kwargs: dict | None = None,
     ):
         rpc_client = self._get_dp_rpc_client()
 

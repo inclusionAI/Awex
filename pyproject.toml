@@ -96,9 +96,6 @@ select = [
     "UP", # pyupgrade
 ]
 ignore = [
-    # Keep existing annotations, cache decorators and zip semantics when raising
-    # the Python floor; avoid unrelated repository-wide style migrations.
-    "UP006", "UP007", "UP033", "UP035", "UP045", "B905",
     "E501",  # line too long, handled by formatter
     "B008",  # do not perform function calls in argument defaults
     "C901",  # too complex

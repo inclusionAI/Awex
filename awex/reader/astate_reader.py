@@ -15,7 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from typing import List
 
 from awex import logging
 from awex.reader.weights_reader import WorkerWeightsReader
@@ -65,7 +64,7 @@ class AStateWorkerWeightsReader(WorkerWeightsReader):
     def read_tensors(
         self,
         step_id: int,
-        tensor_pairs: List,
+        tensor_pairs: list,
         **kwargs,
     ):
         from astate.utils import create_sharded_key

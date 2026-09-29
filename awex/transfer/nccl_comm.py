@@ -18,8 +18,8 @@ import math
 import os
 import subprocess
 import time
+from collections.abc import Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Dict, List, Optional, Sequence
 
 import torch
 import torch.distributed as dist
@@ -32,10 +32,10 @@ logger = logging.getLogger(__name__)
 
 
 NUM_COMM_STREAMS = 64
-_COMM_STREAMS_PER_DEVICE: Dict[int, List[object]] = {}
+_COMM_STREAMS_PER_DEVICE: dict[int, list[object]] = {}
 
 
-def _get_comm_streams() -> List[object]:
+def _get_comm_streams() -> list[object]:
     """Get (and lazily create) device streams for the current device."""
     if device_util.get_device_type() not in {"cuda", "npu"}:
         return []
@@ -230,7 +230,7 @@ def execute_tensors_to_copy(tensors_to_copy, copy_ops, recv_parameters, stage: s
     assert len(copy_ops) == len(tensors_to_copy), (
         f"Number of copy operations mismatch: {len(copy_ops)} != {len(tensors_to_copy)}"
     )
-    for send_tensor, recv_op in zip(tensors_to_copy, copy_ops):
+    for send_tensor, recv_op in zip(tensors_to_copy, copy_ops, strict=False):
         recv_tensor = recv_parameters[recv_op.recv_shard_meta.name]
         recv_tensor_sliced = slice_tensor(recv_tensor, recv_op, False)
         recv_tensor_sliced.copy_(send_tensor)
@@ -446,7 +446,7 @@ def nccl_build_send_ops(
 
 
 def nccl_build_recv_ops(
-    parameters: Dict[str, torch.Tensor],
+    parameters: dict[str, torch.Tensor],
     transfer_plan,
     weights_update_group,
     use_batch_send_recv: bool = True,
@@ -488,7 +488,7 @@ def nccl_build_recv_ops(
     return p2p_op_list, non_contiguous_tensor_pairs, recv_traj_list
 
 
-def _interleave_p2p_ops_by_peer(ops: Sequence[dist.P2POp]) -> List[dist.P2POp]:
+def _interleave_p2p_ops_by_peer(ops: Sequence[dist.P2POp]) -> list[dist.P2POp]:
     """Return a new list of P2P ops interleaved by peer rank.
 
     This performs a simple round-robin across peers so that operations to
@@ -499,14 +499,14 @@ def _interleave_p2p_ops_by_peer(ops: Sequence[dist.P2POp]) -> List[dist.P2POp]:
     if not ops:
         return []
 
-    by_peer: Dict[int, List[dist.P2POp]] = {}
+    by_peer: dict[int, list[dist.P2POp]] = {}
     for op in ops:
         by_peer.setdefault(op.peer, []).append(op)
 
     peers = sorted(by_peer.keys())
     progress = dict.fromkeys(peers, 0)
     remaining = sum(len(v) for v in by_peer.values())
-    interleaved: List[dist.P2POp] = []
+    interleaved: list[dist.P2POp] = []
 
     while remaining > 0:
         for peer in peers:
@@ -521,7 +521,7 @@ def _interleave_p2p_ops_by_peer(ops: Sequence[dist.P2POp]) -> List[dist.P2POp]:
     return interleaved
 
 
-def _run_p2p_op(op: dist.P2POp, async_op: bool) -> Optional[dist.Work]:
+def _run_p2p_op(op: dist.P2POp, async_op: bool) -> dist.Work | None:
     """Run a single P2P op, returning Work for async operations.
 
     The direction (send vs recv) is determined by ``op.op``; ``async_op``
@@ -542,8 +542,8 @@ def _run_p2p_op(op: dist.P2POp, async_op: bool) -> Optional[dist.Work]:
 
 
 def batch_send_recv(
-    send_ops: Optional[Sequence[dist.P2POp]],
-    recv_ops: Optional[Sequence[dist.P2POp]],
+    send_ops: Sequence[dist.P2POp] | None,
+    recv_ops: Sequence[dist.P2POp] | None,
     blocking: bool = True,
     use_group: bool = True,
     use_stream: bool = True,
@@ -595,7 +595,7 @@ def batch_send_recv(
     # same peer execute on the same CUDA stream, preserving ordering within
     # that peer while allowing different peers to run concurrently.
     peers = sorted({op.peer for op in all_ops})
-    peer_to_stream_idx: Dict[int, int] = {}
+    peer_to_stream_idx: dict[int, int] = {}
     if use_stream > 0:
         for idx, peer in enumerate(peers):
             peer_to_stream_idx[peer] = idx % num_streams

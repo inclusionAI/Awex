@@ -18,7 +18,7 @@
 import json
 import os
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 from awex.meta.meta_resolver import ParamMetaResolver, logger
 from awex.meta.weight_meta import (
@@ -117,17 +117,17 @@ class InferParamMetaResolver(ParamMetaResolver):
     def get_model_arch_name(self) -> str:
         return self._model_arch_name
 
-    def get_parameters_meta(self) -> List[ParameterMeta]:
+    def get_parameters_meta(self) -> list[ParameterMeta]:
         """
         Returns the list of ParameterMeta objects for all parameters in the model.
         """
         return self._params_meta
 
-    def _get_params_raw_meta(self) -> List[Dict[str, Any]]:
+    def _get_params_raw_meta(self) -> list[dict[str, Any]]:
         return self._params_raw_meta
 
     @staticmethod
-    def _meta_identity_key(info: Dict[str, Any]):
+    def _meta_identity_key(info: dict[str, Any]):
         rank_info = info["rank_info"]
         return (
             rank_info.global_rank,
@@ -141,8 +141,8 @@ class InferParamMetaResolver(ParamMetaResolver):
 
     @classmethod
     def _select_canonical_rank0_meta(
-        cls, params_raw_meta: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
+        cls, params_raw_meta: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         if not params_raw_meta:
             raise ValueError("No inference parameter metadata collected.")
 
@@ -180,8 +180,8 @@ class InferParamMetaResolver(ParamMetaResolver):
         return min(params_raw_meta, key=cls._meta_identity_key)
 
     def _get_sharding_info(
-        self, name: str, rank_info: RankInfo, param_meta: Dict[str, Any]
-    ) -> Tuple[ShardingType, int, int]:
+        self, name: str, rank_info: RankInfo, param_meta: dict[str, Any]
+    ) -> tuple[ShardingType, int, int]:
         return self._sharding_strategy.get_sharding_strategy(
             name, rank_info=rank_info, param_meta=param_meta
         )

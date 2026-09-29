@@ -23,8 +23,9 @@ import pickle
 import time
 import traceback
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from awex import logging
 from awex.config import InferenceConfig

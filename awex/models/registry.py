@@ -18,9 +18,10 @@
 import importlib
 import inspect
 import pkgutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
 from transformers import PretrainedConfig
 
@@ -35,12 +36,12 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ModelConfig:
     sharding_strategy: Callable[..., ShardingStrategy]
-    mcore_converter: Optional[Callable[..., Any]]
-    sglang_converter: Optional[Callable[..., Any]]
+    mcore_converter: Callable[..., Any] | None
+    sglang_converter: Callable[..., Any] | None
 
 
 class _ModelRegistry:
-    def __init__(self, models: Dict[str, ModelConfig]):
+    def __init__(self, models: dict[str, ModelConfig]):
         self.models = models
 
     def get_registered_models(self):
@@ -108,7 +109,7 @@ def get_sharding_strategy(model_name: str):
 
 
 def _resolve_converter(
-    config_value: Optional[Callable[..., Any]],
+    config_value: Callable[..., Any] | None,
     default: Callable[..., Any],
 ):
     if config_value is None:
@@ -126,7 +127,7 @@ def get_train_weights_converter(
     model_name: str,
     hf_config: PretrainedConfig,
     rank_info,
-    infer_conf: Dict,
+    infer_conf: dict,
     tf_config=None,
 ):
     config = ModelRegistry.get_model_config(model_name)
@@ -153,7 +154,7 @@ def get_infer_weights_converter(
     model_name: str,
     hf_config: PretrainedConfig,
     rank_info,
-    infer_engine_config: Dict,
+    infer_engine_config: dict,
 ):
     config = ModelRegistry.get_model_config(model_name)
     if engine_name == "sglang":

@@ -432,7 +432,7 @@ class TestIntegration:
         # Verify reconstruction
         assert len(reconstructed) == len(tensors)
         for i, (original, reconstructed_tensor) in enumerate(
-            zip(tensors, reconstructed)
+            zip(tensors, reconstructed, strict=False)
         ):
             assert torch.equal(original, reconstructed_tensor), f"Tensor {i} mismatch"
 
@@ -453,7 +453,7 @@ class TestIntegration:
         reconstructed = reconstruct_tensors_from_groups(tensor_groups, metadata)
         assert len(reconstructed) == len(tensors)
         for i, (original, reconstructed_tensor) in enumerate(
-            zip(tensors, reconstructed)
+            zip(tensors, reconstructed, strict=False)
         ):
             assert torch.equal(original, reconstructed_tensor), f"Tensor {i} mismatch"
 
@@ -471,7 +471,7 @@ class TestIntegration:
 
         assert len(reconstructed) == len(tensors)
         for i, (original, reconstructed_tensor) in enumerate(
-            zip(tensors, reconstructed)
+            zip(tensors, reconstructed, strict=False)
         ):
             assert torch.equal(original, reconstructed_tensor), f"Tensor {i} mismatch"
             assert original.dtype == reconstructed_tensor.dtype, (

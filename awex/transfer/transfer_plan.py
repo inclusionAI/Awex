@@ -18,9 +18,10 @@
 import json
 import os
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from hashlib import sha256
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any
 
 import torch
 
@@ -41,13 +42,13 @@ class CommunicationOperation:
 
     send_rank: int
     send_shard_meta: ParameterShardMeta
-    send_offset: Tuple[int, ...]
+    send_offset: tuple[int, ...]
     recv_rank: int
     recv_shard_meta: ParameterShardMeta
-    recv_offset: Tuple[int, ...]
-    overlap_shape: Tuple[int, ...]
-    train_slices: Tuple[slice, ...]
-    inf_slices: Tuple[slice, ...]
+    recv_offset: tuple[int, ...]
+    overlap_shape: tuple[int, ...]
+    train_slices: tuple[slice, ...]
+    inf_slices: tuple[slice, ...]
     # Destination PP stage index in infer topology.
     pp_rank: int = 0
     # Optional runtime placement version marker for debug/trace.
@@ -67,9 +68,9 @@ class TransferPlan:
     """
 
     # Backward-compatible alias to inter_operations. Existing callers use this.
-    operations: Dict[int, List[CommunicationOperation]] = field(default_factory=dict)
+    operations: dict[int, list[CommunicationOperation]] = field(default_factory=dict)
     # Explicit inter transfer ops (train <-> infer).
-    inter_operations: Dict[int, List[CommunicationOperation]] = field(
+    inter_operations: dict[int, list[CommunicationOperation]] = field(
         default_factory=dict
     )
 
@@ -182,10 +183,10 @@ class TransferPlanBuilder:
 
     def build_weights_mapping_operations(
         self,
-        inference_weights_meta: List[ParameterMeta],
-        training_weights_meta: List[ParameterMeta],
+        inference_weights_meta: list[ParameterMeta],
+        training_weights_meta: list[ParameterMeta],
         global_transfer_rank: int = None,
-    ) -> List[CommunicationOperation]:
+    ) -> list[CommunicationOperation]:
         """
         Build the weights transfer plan.
 
@@ -277,7 +278,7 @@ class TransferPlanBuilder:
         inference_meta: ParameterMeta,
         training_meta: ParameterMeta,
         global_transfer_rank: int = None,
-    ) -> List[CommunicationOperation]:
+    ) -> list[CommunicationOperation]:
         """
         Build communication plan for a single parameter for a specific rank.
 
@@ -376,7 +377,7 @@ class TransferPlanBuilder:
         is_infer: bool,
         global_transfer_rank: int = None,
         reused_shape_obj=None,
-    ) -> List[ShardOffset]:
+    ) -> list[ShardOffset]:
         """
         Create a mapping from offset ranges to shards for a specific replica.
 
@@ -443,9 +444,9 @@ class TransferPlanBuilder:
 
     def _find_overlapping_regions(
         self,
-        inference_map: List[ShardOffset],
-        training_map: List[ShardOffset],
-    ) -> List[OverlapRegion]:
+        inference_map: list[ShardOffset],
+        training_map: list[ShardOffset],
+    ) -> list[OverlapRegion]:
         """Find overlapping regions between inference and training shards."""
         overlapping_regions = []
 
@@ -488,8 +489,8 @@ class TransferPlanBuilder:
     def _build_region_communication_plan(
         self,
         region: OverlapRegion,
-        reused_shape_obj: List = None,
-    ) -> List[CommunicationOperation]:
+        reused_shape_obj: list = None,
+    ) -> list[CommunicationOperation]:
         """Build communication plan for an overlapping region."""
         plan = []
 
@@ -557,8 +558,8 @@ class TransferPlanBuilder:
         return plan
 
     def _group_operations_by_rank(
-        self, operations: List[CommunicationOperation], key_name: str
-    ) -> Dict[int, List[CommunicationOperation]]:
+        self, operations: list[CommunicationOperation], key_name: str
+    ) -> dict[int, list[CommunicationOperation]]:
         grouped_operations = {}
         for operation in operations:
             key = getattr(operation, key_name)
@@ -583,8 +584,8 @@ class TransferPlanBuilder:
 
     def build_local_transfer_plan(
         self,
-        inference_weights_meta: List[ParameterMeta],
-        training_weights_meta: List[ParameterMeta],
+        inference_weights_meta: list[ParameterMeta],
+        training_weights_meta: list[ParameterMeta],
         global_transfer_rank: int,
     ) -> TransferPlan:
         is_train = global_transfer_rank >= self.infer_world_size
@@ -733,7 +734,7 @@ def compute_transfer_plan_hash(
 ) -> str:
     """Create a deterministic hash for plan observability/debugging."""
 
-    def _slice_tuple(slices: Iterable[slice]) -> Tuple[Tuple[int, int, int], ...]:
+    def _slice_tuple(slices: Iterable[slice]) -> tuple[tuple[int, int, int], ...]:
         return tuple((s.start, s.stop, s.step or 1) for s in slices)
 
     payload = {"inter": []}
@@ -781,7 +782,7 @@ def _dtype_element_size(dtype: Any) -> int:
 
 def compute_transfer_plan_stats(
     transfer_plan: TransferPlan,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Return structured observability stats for a transfer plan."""
     inter_ops = 0
     inter_numel = 0

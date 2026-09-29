@@ -173,7 +173,7 @@ def pack_qwen4_exp_gated_qkv(
     return torch.cat(
         [
             torch.cat([part.reshape(-1, *tail) for part in parts], dim=0)
-            for parts in zip(query_parts, key_parts, value_parts)
+            for parts in zip(query_parts, key_parts, value_parts, strict=False)
         ],
         dim=0,
     ).contiguous()

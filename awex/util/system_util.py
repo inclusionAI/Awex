@@ -18,7 +18,6 @@
 import glob
 import os
 import subprocess
-from typing import Dict
 
 import psutil
 
@@ -34,7 +33,7 @@ def count_open_fds() -> int:
     return len(glob.glob(f"/proc/{os.getpid()}/fd/*"))
 
 
-def count_sysv_ipc() -> Dict[str, int]:
+def count_sysv_ipc() -> dict[str, int]:
     pid = str(os.getpid())
     counts = {"msg": 0, "sem": 0, "shm": 0}
 
@@ -52,7 +51,7 @@ def count_sysv_ipc() -> Dict[str, int]:
     return counts
 
 
-def count_posix_ipc() -> Dict[str, int]:
+def count_posix_ipc() -> dict[str, int]:
     pid = os.getpid()
     proc = psutil.Process(pid)
     counts = {"shm": 0, "sem": 0, "mq": 0}

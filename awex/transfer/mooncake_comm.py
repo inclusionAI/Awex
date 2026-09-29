@@ -18,7 +18,7 @@
 """Mooncake data transfers, with AWEX metadata used only for rendezvous."""
 
 import os
-from typing import Callable, Dict, Optional
+from collections.abc import Callable
 
 import torch
 
@@ -109,12 +109,12 @@ class MooncakeTransport:
     @torch.no_grad()
     def send(
         self,
-        parameters: Dict[str, torch.Tensor],
+        parameters: dict[str, torch.Tensor],
         plan: TransferPlan,
         step_id: int,
         *,
         offload: bool = False,
-        on_ready: Optional[Callable[[], None]] = None,
+        on_ready: Callable[[], None] | None = None,
     ) -> None:
         """Snapshot and consume converted parameters, then serve all peer reads."""
         prefix = self._begin(step_id)
@@ -182,7 +182,7 @@ class MooncakeTransport:
 
     @torch.no_grad()
     def receive(
-        self, parameters: Dict[str, torch.Tensor], plan: TransferPlan, step_id: int
+        self, parameters: dict[str, torch.Tensor], plan: TransferPlan, step_id: int
     ) -> None:
         prefix = self._begin(step_id)
         try:
@@ -196,7 +196,7 @@ class MooncakeTransport:
                         raise ValueError(
                             "Mooncake transfer plan operation count mismatch"
                         )
-                    for op, entry in zip(operations, entries):
+                    for op, entry in zip(operations, entries, strict=False):
                         signature, address, size, shape, dtype = entry
                         target = slice_tensor(
                             parameters[op.recv_shard_meta.name], op, False

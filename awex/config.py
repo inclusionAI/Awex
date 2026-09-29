@@ -16,7 +16,7 @@
 # under the License.
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal
 
 
 class InferenceConfigValidationError(ValueError):
@@ -37,34 +37,34 @@ class InferenceConfig:
     Configuration for inference.
     """
 
-    model_path: Optional[str] = None
+    model_path: str | None = None
     # Other runtime options
-    tp_size: Optional[int] = None
-    pp_size: Optional[int] = None
+    tp_size: int | None = None
+    pp_size: int | None = None
     # Data parallelism
-    dp_size: Optional[int] = None
-    load_balance_method: Optional[str] = None
+    dp_size: int | None = None
+    load_balance_method: str | None = None
     # Expert parallelism
-    ep_size: Optional[int] = None
-    enable_dp_attention: Optional[bool] = None
-    enable_dp_lm_head: Optional[bool] = None
-    deepep_mode: Optional[Literal["auto", "normal", "low_latency"]] = None
-    ep_num_redundant_experts: Optional[int] = None
-    enable_eplb: Optional[bool] = None
-    enable_memory_saver: Optional[bool] = None
-    moe_dense_tp_size: Optional[int] = None
-    n_share_experts_fusion: Optional[int] = None
-    nnodes: Optional[int] = None
-    node_rank: Optional[int] = None
+    ep_size: int | None = None
+    enable_dp_attention: bool | None = None
+    enable_dp_lm_head: bool | None = None
+    deepep_mode: Literal["auto", "normal", "low_latency"] | None = None
+    ep_num_redundant_experts: int | None = None
+    enable_eplb: bool | None = None
+    enable_memory_saver: bool | None = None
+    moe_dense_tp_size: int | None = None
+    n_share_experts_fusion: int | None = None
+    nnodes: int | None = None
+    node_rank: int | None = None
 
-    local_rank: Optional[int] = None
+    local_rank: int | None = None
     # awex specific config
     # the number of all sglang engines in the cluster
     num_engines: int = 1
     # the rank of the current engine
     engine_rank: int = 0
     # the address of the meta server: `ip:port`
-    meta_server_addr: Optional[str] = None
+    meta_server_addr: str | None = None
     # weights exchange communication backend (file/nccl/hccl/astate/mooncake)
     comm_backend: str = "file"
     # how much steps with weights validation, if enabled, weights update will use both file and transfer and
@@ -73,15 +73,15 @@ class InferenceConfig:
     # validate weights every n steps, if enabled, weights update will use both file and transfer and compare the weights
     validate_weights_every_n_steps: int = 1
     # the list of weights to be validated
-    dump_weights_list_for_validation: List[str] = field(default_factory=list)
+    dump_weights_list_for_validation: list[str] = field(default_factory=list)
     # the directory to dump weights for validation
-    dump_weights_dir_for_validation: Optional[str] = None
+    dump_weights_dir_for_validation: str | None = None
     # disable the pipeline of weights exchange
     disable_weights_exchange_pipeline: bool = False
     # enable debug mode
     enable_debug_mode: bool = False
     # debug mode config, e.g. "enable_nccl_debug_mode=1"
-    debug_mode_config: Dict = field(
+    debug_mode_config: dict = field(
         default_factory=dict, metadata={"help": "Debug mode configuration"}
     )
     # enable training and inference share same gpus
@@ -96,7 +96,7 @@ class InferenceConfig:
         Raises:
             InferenceConfigValidationError: if any field is invalid or fields are inconsistent.
         """
-        errors: List[str] = []
+        errors: list[str] = []
 
         # comm_backend must be one of the known values
         if self.comm_backend not in _VALID_COMM_BACKENDS:
@@ -197,7 +197,7 @@ class InferenceConfig:
 
     @staticmethod
     def from_dict(
-        config_dict: Dict[str, Any], validate: bool = True
+        config_dict: dict[str, Any], validate: bool = True
     ) -> "InferenceConfig":
         # remove all keys that are not fields of InferenceConfig
         config_dict = {

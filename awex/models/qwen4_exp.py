@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Mapping
-from functools import lru_cache
+from functools import cache, lru_cache
 
 import torch
 from torch import nn
@@ -108,7 +108,7 @@ def _refresh_frozen_binding(converter, binder: Callable[[object], None] | None) 
         raise
 
 
-@lru_cache(maxsize=None)
+@cache
 def build_mcore_converter(binder: Callable[[object], None] | None = None):
     from awex.converter.mcore_converter import _process_mcore_pp_name
     from awex.models.qwen3_5 import _MCORE_CONVERTER_FACTORY
@@ -263,7 +263,7 @@ def build_mcore_converter(binder: Callable[[object], None] | None = None):
     return McoreToHFWeightConverterQwen4Exp
 
 
-@lru_cache(maxsize=None)
+@cache
 def build_sglang_converter(binder: Callable[[object], None] | None = None):
     from awex.models.qwen3_5 import SGlangToHFWeightConverterQwen3_5
 

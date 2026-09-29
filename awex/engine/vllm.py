@@ -16,7 +16,7 @@
 # under the License.
 
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 from awex import logging
 from awex.config import InferenceConfig
@@ -38,7 +38,7 @@ _VLLM_TASK_SIGNATURES = {
 class VLLMEngine(InferenceEngine):
     def __init__(
         self,
-        config: Union[Dict[str, Any], InferenceConfig],
+        config: dict[str, Any] | InferenceConfig,
         vllm_engine,
         hf_config=None,
     ):
@@ -84,9 +84,7 @@ class VLLMEngine(InferenceEngine):
                 f"Skip initializing weights exchange reader for {self.rank_coordinate}"
             )
 
-    def update_weights_from_disk(
-        self, model_path: str, load_format: Optional[str] = None
-    ):
+    def update_weights_from_disk(self, model_path: str, load_format: str | None = None):
         if load_format is not None:
             logger.warning(
                 "vLLM remote update does not support load_format; ignoring %s",
@@ -121,7 +119,7 @@ class VLLMEngine(InferenceEngine):
             f"took {duration:.3f} seconds"
         )
 
-    def release_memory_occupation(self, tags: Optional[List[str]] = None) -> None:
+    def release_memory_occupation(self, tags: list[str] | None = None) -> None:
         tags = tags or ["kv_cache", "weights"]
         if isinstance(tags, str):
             tags = [tags]
@@ -136,7 +134,7 @@ class VLLMEngine(InferenceEngine):
             self._vllm_engine._engine.offload()
             logger.info("Finished releasing memory occupation")
 
-    def resume_memory_occupation(self, tags: Optional[List[str]] = None) -> None:
+    def resume_memory_occupation(self, tags: list[str] | None = None) -> None:
         tags = tags or ["kv_cache", "weights"]
         if isinstance(tags, str):
             tags = [tags]
@@ -195,7 +193,7 @@ def _load_hf_config(model_path: str):
     return AutoConfig.from_pretrained(model_path, trust_remote_code=True)
 
 
-def _adapt_task_kwargs(method: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+def _adapt_task_kwargs(method: str, kwargs: dict[str, Any]) -> dict[str, Any]:
     """Adapt Awex task kwargs to the vLLM utility surface."""
     signature = _VLLM_TASK_SIGNATURES.get(method)
     if signature is None:

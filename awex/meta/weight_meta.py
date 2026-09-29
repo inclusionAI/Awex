@@ -16,7 +16,6 @@
 # under the License.
 
 from dataclasses import dataclass, field
-from typing import List, Tuple
 
 import torch
 
@@ -57,10 +56,10 @@ class ParameterShardMeta:
     world_size: int
     engine_rank: int
     name: str
-    shape: Tuple[int, ...]
+    shape: tuple[int, ...]
     numel: int
     dtype: torch.dtype
-    global_offset: Tuple[int, ...] = field(default_factory=tuple)
+    global_offset: tuple[int, ...] = field(default_factory=tuple)
     sharding_type: ShardingType = ShardingType.NO_SHARDING
     num_shards: int = 1
     sharding_dim: int = 0
@@ -78,7 +77,7 @@ class ParameterReplicaMeta:
         shards (List[ParameterShardMeta]): List of shards in this replica.
     """
 
-    shards: List[ParameterShardMeta]
+    shards: list[ParameterShardMeta]
 
 
 @dataclass(slots=True)
@@ -97,10 +96,10 @@ class ParameterMeta:
 
     name: str
     global_numel: int
-    global_shape: Tuple[int, ...]
+    global_shape: tuple[int, ...]
     dtype: torch.dtype
-    shards: List[ParameterShardMeta]
-    replicas: List[ParameterReplicaMeta]
+    shards: list[ParameterShardMeta]
+    replicas: list[ParameterReplicaMeta]
 
     def fast_copy_with_engine_rank(self, engine_rank: int) -> "ParameterMeta":
         shards = []
@@ -177,7 +176,7 @@ class ParameterMeta:
         return new_meta
 
 
-def dump_parameters_meta(params_meta: List[ParameterMeta]):
+def dump_parameters_meta(params_meta: list[ParameterMeta]):
     data = []
     for p in params_meta:
         data.append(
@@ -196,7 +195,7 @@ def dump_parameters_meta(params_meta: List[ParameterMeta]):
     return data
 
 
-def compute_total_model_size(params_meta: List[ParameterMeta]) -> int:
+def compute_total_model_size(params_meta: list[ParameterMeta]) -> int:
     """
     Compute the total size of the model in bytes.
     """
