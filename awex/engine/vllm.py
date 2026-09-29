@@ -44,6 +44,7 @@ class VLLMEngine(InferenceEngine):
     ):
         if isinstance(config, dict):
             config = InferenceConfig.from_dict(config)
+        config.validate()
         if hf_config is None:
             if config.model_path is None:
                 raise ValueError("hf_config or config.model_path must be provided.")
@@ -68,7 +69,7 @@ class VLLMEngine(InferenceEngine):
     def initialize(self) -> None:
         if not getattr(self._vllm_engine, "initialized", False):
             self._vllm_engine.initialize()
-        if self.config.node_rank == 0:
+        if self.node_rank == 0:
             logger.info(
                 f"Start to initialize weights exchange reader for {self.rank_coordinate}"
             )

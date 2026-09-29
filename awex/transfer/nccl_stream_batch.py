@@ -529,9 +529,7 @@ class NcclColocateStreamBatchTransport:
                 actual_send_rank,
                 group=weights_update_group,
             )
-            local_self_recv_built.append(
-                (actual_send_rank, op, p2p_op, copyback_pair)
-            )
+            local_self_recv_built.append((actual_send_rank, op, p2p_op, copyback_pair))
 
         if len(tensors_to_copy) > 0:
             send_rank_for_self = infer_to_train_device_mapping[transfer_rank]
@@ -625,9 +623,7 @@ class NcclColocateStreamBatchTransport:
                         device=device_util.get_torch_device(),
                         dtype=torch.int64,
                     )
-                    dist.all_reduce(
-                        t, op=dist.ReduceOp.MIN, group=weights_update_group
-                    )
+                    dist.all_reduce(t, op=dist.ReduceOp.MIN, group=weights_update_group)
                     new_step = int(t.item())
                     if new_step != step_size:
                         logger.info(
@@ -660,9 +656,7 @@ class NcclColocateStreamBatchTransport:
                     device=device_util.get_torch_device(),
                     dtype=torch.int64,
                 )
-                dist.all_reduce(
-                    t, op=dist.ReduceOp.MAX, group=weights_update_group
-                )
+                dist.all_reduce(t, op=dist.ReduceOp.MAX, group=weights_update_group)
                 new_n = int(t.item())
                 if new_n != n_chunks:
                     logger.info(
@@ -758,7 +752,12 @@ class NcclColocateStreamBatchTransport:
                 chunk_recv_p2p_ops[recv_from_rank] = p2p_ops
 
             if chunk_idx == 0 and local_self_recv_built:
-                for actual_send_rank, op, p2p_op, copyback_pair in local_self_recv_built:
+                for (
+                    actual_send_rank,
+                    op,
+                    p2p_op,
+                    copyback_pair,
+                ) in local_self_recv_built:
                     chunk_recv_p2p_ops.setdefault(actual_send_rank, []).append(
                         (op, p2p_op)
                     )
@@ -785,7 +784,7 @@ class NcclColocateStreamBatchTransport:
             logger.warning(
                 f"[CHUNKED-DIAG {task_id}] chunk_idx={chunk_idx}/{n_chunks} EXIT "
                 f"send_peers={len(chunk_send_p2p_ops)} recv_peers={len(chunk_recv_p2p_ops)} "
-                f"clone_mb={chunk_clone_bytes/1024/1024:.1f}"
+                f"clone_mb={chunk_clone_bytes / 1024 / 1024:.1f}"
             )
 
             chunk_send_p2p_ops = None
@@ -793,6 +792,7 @@ class NcclColocateStreamBatchTransport:
             chunk_recv_tensor_pairs = None
             chunk_slice_context = None
             import gc as _gc
+
             _gc.collect()
             if hasattr(torch, "cuda") and torch.cuda.is_available():
                 torch.cuda.empty_cache()

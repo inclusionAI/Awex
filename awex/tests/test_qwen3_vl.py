@@ -98,9 +98,7 @@ def _make_train_converter(vl_config, rank_info, tf_config, **infer_conf):
 
 
 def _make_infer_converter(vl_config, rank_info, infer_engine_config):
-    return Qwen3VLSGlangToHFWeightConverter(
-        vl_config, infer_engine_config, rank_info
-    )
+    return Qwen3VLSGlangToHFWeightConverter(vl_config, infer_engine_config, rank_info)
 
 
 @pytest.mark.parametrize(
@@ -150,9 +148,7 @@ def test_language_qkv_has_train_infer_name_and_value_parity(
     train_converter = _make_train_converter(
         vl_config, rank_info, tf_config, router_dtype="fp32"
     )
-    infer_converter = _make_infer_converter(
-        vl_config, rank_info, infer_engine_config
-    )
+    infer_converter = _make_infer_converter(vl_config, rank_info, infer_engine_config)
     mcore_qkv = torch.arange(16 * 8, dtype=torch.float32).reshape(16, 8)
 
     train_params = train_converter.convert_param(
@@ -197,8 +193,7 @@ def test_vision_qkv_tp2_matches_sglang_rank_layout(
     )
 
     [(name, packed_qkv)] = converter.convert_param(
-        "module.module.vision_model.decoder.layers.1."
-        f"self_attention.linear_qkv.{kind}",
+        f"module.module.vision_model.decoder.layers.1.self_attention.linear_qkv.{kind}",
         mcore_qkv,
     )
 
@@ -244,9 +239,7 @@ def test_vision_parameters_have_train_infer_parity(
     infer_engine_config,
 ):
     train_converter = _make_train_converter(vl_config, rank_info, tf_config)
-    infer_converter = _make_infer_converter(
-        vl_config, rank_info, infer_engine_config
-    )
+    infer_converter = _make_infer_converter(vl_config, rank_info, infer_engine_config)
     parameter = torch.arange(8, dtype=torch.float32)
 
     train_params = train_converter.convert_param(mcore_name, parameter)
@@ -257,16 +250,13 @@ def test_vision_parameters_have_train_infer_parity(
     torch.testing.assert_close(train_params[0][1], infer_params[0][1], rtol=0, atol=0)
 
 
-def test_moe_expert_reuses_qwen3_global_ep_numbering(
-    vl_config, tf_config, rank_info
-):
+def test_moe_expert_reuses_qwen3_global_ep_numbering(vl_config, tf_config, rank_info):
     rank_info.ep_size = 2
     rank_info.ep_rank = 1
     converter = _make_train_converter(vl_config, rank_info, tf_config)
 
     converted = converter.convert_param(
-        "module.module.language_model.decoder.layers.0."
-        "mlp.experts.linear_fc2.weight0",
+        "module.module.language_model.decoder.layers.0.mlp.experts.linear_fc2.weight0",
         torch.ones(8, 6),
     )
 
@@ -280,17 +270,13 @@ def test_tied_embedding_alias_has_train_infer_parity(
 ):
     vl_config.text_config.tie_word_embeddings = True
     train_converter = _make_train_converter(vl_config, rank_info, tf_config)
-    infer_converter = _make_infer_converter(
-        vl_config, rank_info, infer_engine_config
-    )
+    infer_converter = _make_infer_converter(vl_config, rank_info, infer_engine_config)
     embedding = torch.arange(32, dtype=torch.float32).reshape(4, 8)
 
     train_params = train_converter.convert_param(
         "module.module.language_model.embedding.word_embeddings.weight", embedding
     )
-    infer_params = infer_converter.convert_param(
-        "model.embed_tokens.weight", embedding
-    )
+    infer_params = infer_converter.convert_param("model.embed_tokens.weight", embedding)
 
     expected_names = ["model.language_model.embed_tokens.weight", "lm_head.weight"]
     assert [name for name, _ in train_params] == expected_names
@@ -387,8 +373,7 @@ def test_pipeline_mapping_only_rewrites_language_layers(
         language_weight,
     )
     [(vision_name, _)] = converter.convert_param(
-        "module.module.vision_model.decoder.layers.0."
-        "self_attention.linear_proj.weight",
+        "module.module.vision_model.decoder.layers.0.self_attention.linear_proj.weight",
         vision_weight,
     )
 

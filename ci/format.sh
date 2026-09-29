@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if ! command -v ruff >/dev/null 2>&1; then
-  pip install ruff
-fi
-
-if ! command -v prettier >/dev/null 2>&1; then
-  npm install -g prettier
-fi
-
-ruff format .
-ruff check --fix .
-prettier --write "**/*.md"
+case "${1:---write}" in
+  --check)
+    ruff format --check .
+    ruff check .
+    git ls-files -z -- '*.md' | xargs -0 prettier --check
+    ;;
+  --write)
+    ruff format .
+    ruff check --fix .
+    git ls-files -z -- '*.md' | xargs -0 prettier --write
+    ;;
+  *)
+    echo "Usage: bash ci/format.sh [--check|--write]" >&2
+    exit 2
+    ;;
+esac

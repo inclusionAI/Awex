@@ -11,7 +11,7 @@ The Awex weight exchange framework consists primarily of three components:
 - **MetaServer**: Job-level global server for service discovery and weight metadata exchange between training and inference engines, as well as event notification functions in co-located scenarios;
 
 <div align="center">
-  <img width="95%" alt="Apache Fory logo" src="images/awex_arch.png"><br>
+  <img width="95%" alt="Awex architecture" src="images/awex_arch.png"><br>
 </div>
 
 The core functional modules of weight exchange consist mainly of 5 parts:
@@ -20,7 +20,7 @@ The core functional modules of weight exchange consist mainly of 5 parts:
 - **Global weight metadata calculation and exchange**: After converting training and inference weights into a unified format, collects all weight shard metadata from each worker and reports to Meta Server for subsequent weight transmission plan construction;
 - **P2P weight transmission execution plan**: Training and inference engines obtain global weight shard metadata from all workers, then separately construct peer-to-peer deterministic transfer plan for sending and receiving;
 - **NCCL weight transmission**: Uses NCCL's send/recv API for peer-to-peer weight transmission based on the constructed transmission plan;
-- **RDMA weight transmission**: Uses NUMA affinity and RDMA communication for globally load-balanced transfer plan for weight updates;
+- **Mooncake weight transmission**: Executes shard transfers using one-sided reads over RDMA or CPU-buffer TCP;
 
 ### (1) Unified Training-Inference Weight Convert
 
@@ -57,11 +57,25 @@ After obtaining global weight metadata, Awex constructs a **deterministic point-
 - Pre-filter shards related to the current process to avoid constructing a global plan (shards can reach tens of millions for trillion-parameter models);
 - Ensure strict order consistency of NCCL send/recv;
 
-RDMA is more flexible than NCCL and uses a separate transmission plan, which we will expand on in subsequent articles.
+Mooncake reuses this shard plan and checks the source/target slice signatures
+before copying received data into the inference weights.
 
 ### (4) NCCL Weight Transmission
 
-Awex supports two transmission modes: NCCL (NVIDIA Collective Communications Library) and RDMA (Remote Direct Memory Access). NCCL mode is more user-friendly, while RDMA mode is more flexible with higher performance.
+The `comm_backend` configuration selects the transport:
+
+| Backend    | Runtime and requirements                                  | Update mode                                                      |
+| ---------- | --------------------------------------------------------- | ---------------------------------------------------------------- |
+| `file`     | Engine checkpoint save/load hooks and a shared model path | File reload; colocated use also requires memory hooks            |
+| `nccl`     | CUDA workers and NCCL                                     | Separate workers, or colocated CUDA IPC plus inference-side NCCL |
+| `hccl`     | Experimental NPU runtime with torch-npu/MindSpeed         | NCCL-style process-group path; CPU IPC for colocated use         |
+| `astate`   | Separately installed AState service/runtime               | Distributed table put/get with completion per step               |
+| `mooncake` | Mooncake Transfer Engine; CPU or CUDA workers             | Separate or colocated workers; RDMA or CPU-buffer TCP            |
+
+Every non-file backend requires a shared `meta_server_addr`, even for one
+inference instance. All workers must use the same AWEX and per-framework version
+set. Rank counts come from runtime metadata: SGLang DP Attention partitions TP
+ranks, while vLLM internal DP adds ranks to the instance.
 
 NCCL transmission mode primarily uses NCCL's send/recv interface for weight transmission. There are some implementation differences in Awex for separated and co-located modes, which we will detail here.
 
@@ -75,7 +89,8 @@ In separated transmission mode, Awex first constructs a joint training-inference
 
 **CUDA IPC Co-located Zero-Copy Weight Mapping**
 
-Since the rank count of a single NCCL communication group can only equal the number of GPU cards, and in the training-inference co-located case, the rank count is twice the number of GPU cards, a joint training-inference communication group cannot be directly established.
+In colocated mode, training and inference processes share devices. AWEX avoids
+placing both processes on the same device in one NCCL communicator.
 
 In this case, Awex uses **CUDA IPC to zero-copy map the training process's GPU memory to the inference process**, establishes a global communication group for all inference processes, then uses this communication group for NCCL send/recv to complete weight exchange from training to inference engines:
 
@@ -90,24 +105,36 @@ In implementation, we have also made some **performance optimizations**:
 
 (**Note**: CUDA IPC does not support CUDA virtual memory. Future plans include allocating additional physical memory space for weight merging and transmission when enabling virtual GPU memory in the training engine)
 
-### (5) RDMA Weight Transmission
+For the default colocated NCCL transport, set `AWEX_CHUNK_MB` on every reader to
+bound transient chunk allocations; zero selects the unchunked path. This is not a
+limit on total model or converted-weight memory. Measure peak memory and update
+latency when choosing a value. `BoundedMemoryNcclColocateStreamBatchTransport`
+is an extension implementation with expert packing, not the default factory
+selection; a custom reader must select it consistently on all ranks.
 
-Although NCCL transmission mode can already significantly improve weight exchange performance, NCCL mode has two main limitations:
+### (5) Mooncake Weight Transmission
 
-1. **NCCL versions on training and inference sides need to remain compatible**, otherwise NCCL transmission may hang, preventing independent updates and iterations of training and inference engines;
-2. **NCCL's static topology is not friendly to communication domain scaling**, as continued RL training causes inference outputs to gradually grow and workload to increase, requiring scaling of inference instances. NCCL needs to destroy the entire communication group and rebuild;
-
-Considering these two reasons, we also developed an RDMA-based transmission implementation, which can be switched with a single configuration parameter.
+Set `comm_backend="mooncake"` on both roles. Mooncake transfers data without a
+joint training-inference process group; AWEX's metadata server exchanges buffer
+addresses and completion notifications. Set `AWEX_MOONCAKE_PROTOCOL=rdma` on RDMA
+nodes or `tcp` when RDMA is unavailable. TCP stages CUDA tensors through CPU
+memory. Protocol and step order must agree on every participating worker.
 
 <div align="center">
   <img width="85%" alt="RDMA transport" src="images/rmda_transport.png"><br>
 </div>
 
-**RDMA Mode Advantages**:
+The sender owns registered snapshots until every reader has acknowledged them.
+Colocated updates retain these snapshots on CPU while training weights are
+offloaded, so the engine must implement memory release/resume hooks. The receiver
+stages one slice at a time to support strided target views.
 
-- Removes NCCL version binding, supports independent iteration of training and inference engines
-- More flexible transmission plan optimization space
-- Supports dynamic scaling of inference instances
-- Further performance improvement (1T model from 20 seconds to 6 seconds)
+Topology and transfer plans are fixed for an initialized job. Changing inference
+rank counts requires reinitialization; dynamic scaling is not implemented by this
+backend. After a failed exchange, restart workers with a fresh metadata server:
+published buffers cannot be released while remote accesses may still be active.
 
-RDMA mode implementation will be open-sourced soon. Stay tuned.
+See the [installation and protocol settings](../README.md#mooncake-weight-transfer).
+The native TCP test covers transport correctness; model/framework and RDMA
+deployments require their own integration validation. Performance claims must
+identify the backend, protocol, versions, hardware, tensor sizes and timing scope.

@@ -22,8 +22,15 @@ from awex.meta.meta_server import (
     MetaServer,
     MetaServerClient,
     start_meta_server,
+    stop_meta_server,
 )
 from awex.util.common import from_binary, to_binary
+
+
+@pytest.fixture(autouse=True)
+def cleanup_spawned_server():
+    yield
+    stop_meta_server()
 
 
 # Define test class at module level so it can be pickled
@@ -596,7 +603,10 @@ class TestStartMetaServer:
         assert health["success"] is True
         client.close()
 
-    def test_start_meta_server_empty_host(self):
+    def test_start_meta_server_empty_host(self, monkeypatch):
+        # Exercise automatic host selection without depending on a CI runner's
+        # routable interfaces or proxy configuration.
+        monkeypatch.setattr("awex.meta.meta_server.get_ip_address", lambda: "127.0.0.1")
         address, port = start_meta_server("", 0)
         assert address != ""
         assert port > 0

@@ -1,10 +1,10 @@
 <div align="center">
-  <img src="docs/images/asystem_awex_logo.svg" alt="ASystem-Awex logo" width="480">
+  <a href="https://github.com/inclusionAI/awex"><img src="https://raw.githubusercontent.com/inclusionAI/awex/main/docs/images/asystem_awex_logo.svg" alt="Awex logo" width="480"></a>
 </div>
 
 [![Build Status](https://img.shields.io/github/actions/workflow/status/inclusionAI/asystem-awex/ci.yml?branch=main&style=for-the-badge&label=GITHUB%20ACTIONS&logo=github)](https://github.com/inclusionAI/asystem-awex/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/awex.svg?style=for-the-badge&logo=PyPI)](https://pypi.org/project/awex/)
-[![Python Versions](https://img.shields.io/pypi/pyversions/awex.svg?style=for-the-badge&logo=python)](https://pypi.org/project/awex/)
+[![Python Versions](https://img.shields.io/badge/python-%3E%3D3.10-blue?style=for-the-badge&logo=python)](https://pypi.org/project/awex/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=for-the-badge)](https://opensource.org/licenses/Apache-2.0)
 
 **Awex** is a high-performance RL training-inference **weight synchronization** framework,
@@ -34,7 +34,7 @@ The Awex weight exchange framework consists primarily of three components:
 - **MetaServer**: Job-level global server for service discovery and weight metadata exchange between training and inference engines, as well as event notification functions in co-located scenarios;
 
 <div align="center">
-  <img width="85%" alt="Apache Fory logo" src="docs/images/awex_arch.png"><br>
+  <img width="85%" alt="Awex architecture" src="https://raw.githubusercontent.com/inclusionAI/awex/main/docs/images/awex_arch.png"><br>
 </div>
 
 The core modules of weight exchange consist mainly of 5 parts:
@@ -43,30 +43,31 @@ The core modules of weight exchange consist mainly of 5 parts:
 - **Global weight metadata calculation and exchange**: After converting training and inference weights into a unified format, collects all weight shard metadata from each worker and reports to Meta Server for subsequent weight transmission plan construction;
 - **P2P weight transmission execution plan**: Training and inference engines obtain global weight shard metadata from all workers, then separately construct peer-to-peer deterministic transfer plan for sending and receiving;
 - **NCCL weight transmission**: Uses NCCL's send/recv API for peer-to-peer weight transmission based on the constructed transmission plan;
-- **RDMA weight transmission**: Uses NUMA affinity and RDMA communication for globally load-balanced transfer plan for weight updates;
+- **Mooncake weight transmission**: Uses the same shard transfer plan with one-sided reads over RDMA or CPU-buffer TCP;
 
 Awex also supports tensor-level validation of weights, comparing weights loaded through file system mode with those loaded through transmission mode at the tensor level for fine-grained comparison, ensuring the correctness of the transmission mode.
 
-See more details on our [Document](docs).
+See more details in the [architecture documentation](https://github.com/inclusionAI/awex/blob/main/docs/README.md).
 
 For comprehensive introduction about awex, see the [medium article](https://medium.com/@shawn.ck.yang/awex-an-ultra-fast-weight-sync-framework-powering-trillion-scale-reinforcement-learning-766ebc79f58b)
 
-## Performance Benchmarks
+## Performance
 
-On thousand-GPU scale clusters, Awex using NCCL transmission can **exchange 10B-scale model weights within one second**, and **exchange 1T-scale model weights within twenty seconds**. Using RDMA for transmission, **1T model weight exchange time** can be further **reduced to six seconds**.
-
-| Weight Parameter Scale | Weight Data Size | Verl Time | Awex NCCL Transmission Time | Awex RDMA Transmission Time |
-| ---------------------- | ---------------- | --------- | --------------------------- | --------------------------- |
-| 10B                    | 31GB             | 3.5S      | 0.8S                        | 0.5S                        |
-| 100B                   | 191GB            | 35S       | 9S                          | 3.2S                        |
-| 1000B                  | 1000GB (FP8)     | /         | 20S                         | 6S                          |
+Weight-update latency depends on tensor layout, dtype, rank topology, network and
+transport. Measure conversion, staging, transfer and synchronization separately,
+and report both peak CPU/GPU memory and end-to-end update latency. Include the
+AWEX/framework revisions, model size and hardware with benchmark results.
+Historical RDMA measurements in the article above are not measurements of the
+current Mooncake TCP backend.
 
 ## 📦 Installation
 
 ### Requirements
 
-- Python 3.8 or higher
-- PyTorch 2.0.0 or higher (for GPU support)
+- Python 3.10 or higher
+- PyTorch 2.0.0 or higher, installed with the CUDA/NPU support required by your runtime
+- A training or inference framework installed for the role being used (Megatron,
+  SGLang or vLLM). All workers using a framework must use the same version.
 
 ### Basic Installation
 
@@ -75,6 +76,12 @@ Install awex using pip:
 ```bash
 pip install awex
 ```
+
+The core package declares its Python runtime dependencies. Install a suitable
+PyTorch build first to select your device runtime. Backend frameworks are separate:
+training users can install `awex[mcore]`, and Mooncake users `awex[mooncake]`.
+Inference imports do not require Megatron. Match backend versions to your deployed
+framework stack; AWEX does not support mixed framework versions within a job.
 
 ### Build from Source
 
@@ -140,7 +147,8 @@ pytest awex/tests/test_mooncake_transfer.py -k native_tcp_loopback
 
 ## Quick Start
 
-Awex is a pure Python library that can be installed and used with one command, supporting Python 3.8 and above.
+Awex supports Python 3.10 and above. Install the core package and the backend
+frameworks required for each role as described above.
 
 ```bash
 pip install awex
@@ -148,35 +156,56 @@ pip install awex
 
 Megatron training engine weight sending example:
 
+Start one metadata server for the job in a dedicated process:
+
+```bash
+python -m awex.meta.meta_server
+```
+
+Set `AWEX_META_SERVER_ADDR` to the reachable `ip:port` printed by that process in
+every training and inference worker. Keep the server alive throughout the job.
+The snippets below assume the training process group and Megatron model are
+already initialized. Run training writes and inference updates concurrently with
+matching step IDs, after draining inference requests.
+
 ```python
-from awex import NCCLWeightsWriter
+import os
 from awex.engine.mcore import MegatronEngine
 
 # init
+awex_config = {
+    "comm_backend": "nccl",
+    "meta_server_addr": os.environ["AWEX_META_SERVER_ADDR"],
+}
 train_engine = MegatronEngine(awex_config, hf_config, mcore_model)
-writer = NCCLWeightsWriter(train_engine)
-writer.initialize()
+train_engine.initialize()
 
 # write weights
-writer.write_weights(step_id=1)
+train_engine.set_global_step(1)
+train_engine.write_weights()
 ```
 
 SGLang inference engine weight update example:
 
 ```python
-from awex import WeightsReader, InferenceConfig
+import os
+from awex import InferenceConfig
 from awex.engine.sglang import SGLangEngine, install_sglang_worker_hooks
 import sglang as sgl
 
 install_sglang_worker_hooks()  # Call before creating the engine, on every node.
 sgl_engine = sgl.Engine(model_path="xxx", tp_size=2, random_seed=42)
-awex_config = InferenceConfig.from_sgl_engine(sgl_engine, comm_backend="nccl")
+awex_config = InferenceConfig.from_sgl_engine(
+    sgl_engine,
+    comm_backend="nccl",
+    meta_server_addr=os.environ["AWEX_META_SERVER_ADDR"],
+)
 inference_engine = SGLangEngine(awex_config, sgl_engine)
-reader = WeightsReader(inference_engine)
-reader.initialize()
+inference_engine.initialize()
 
 # update weights
-reader.update_weights(step_id=1)
+inference_engine.set_global_step(1)
+inference_engine.update_weights()
 ```
 
 AWEX installs its own scheduler subprocess entry point; no SGLang source changes
@@ -387,7 +416,7 @@ ruff format .
 ruff check --fix .
 ```
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for detailed build instructions.
+See [DEVELOPMENT.md](https://github.com/inclusionAI/awex/blob/main/DEVELOPMENT.md) for detailed build and CPU/integration test instructions.
 
 ## 📄 License
 

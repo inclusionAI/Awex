@@ -68,13 +68,9 @@ def get_sglang_rank_info(model_context, engine_rank) -> RankInfo:
         ep_rank = 0
         ep_tp_size = 1
         ep_tp_rank = 0
-    cp_size = int(
-        model_context.get(
-            "cp_size", getattr(infer_engine_config, "context_parallel_size", 1)
-        )
-        or 1
-    )
-    cp_rank = int(model_context.get("cp_rank", 0) or 0)
+    # install_sglang_worker_hooks publishes the runtime attention CP axes.
+    cp_size = model_context["attn_cp_size"]
+    cp_rank = model_context["attn_cp_rank"]
     cp_mode = model_context.get(
         "cp_mode", getattr(infer_engine_config, "context_parallel_mode", None)
     )

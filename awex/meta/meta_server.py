@@ -30,6 +30,7 @@ from typing import Any, Dict, Tuple, Union
 
 import requests
 from aiohttp import web
+from urllib3.util import Timeout
 
 from awex import logging
 from awex.util.common import (
@@ -466,17 +467,30 @@ def stop_meta_server():
     return False
 
 
+def _remaining_time(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Meta server deadline exceeded")
+    return remaining
+
+
 def retry(
     fn,
     client,
     max_retries: int = 10,
     initial_delay: float = 1.0,
     max_delay: float = 10.0,
+    *,
+    deadline: float | None = None,
 ):
     for attempt in range(max_retries):
+        if deadline is not None:
+            _remaining_time(deadline)
         try:
             return fn()
         except Exception as e:
+            if deadline is not None:
+                _remaining_time(deadline)
             logger.error(
                 f"Retry {attempt + 1}/{max_retries} failed for {fn.__name__}: {e}"
             )
@@ -492,6 +506,8 @@ def retry(
                 + initial_delay
                 + random.random()
             )
+            if deadline is not None:
+                delay = min(delay, _remaining_time(deadline))
             time.sleep(delay)
 
 
@@ -509,11 +525,30 @@ class MetaServerClient:
         max_retries: int = 10,
         initial_delay: float = 1.0,
         max_delay: float = 10.0,
+        *,
+        deadline: float | None = None,
     ):
-        return retry(fn, self, max_retries, initial_delay, max_delay)
+        return retry(fn, self, max_retries, initial_delay, max_delay, deadline=deadline)
 
-    def _get(self, url: str, timeout: float = 120) -> requests.Response:
-        return self._retry(lambda: self._session.get(url, timeout=timeout))
+    def _get(
+        self, url: str, timeout: float = 120, *, deadline: float | None = None
+    ) -> requests.Response:
+        def request():
+            request_timeout = timeout
+            if deadline is not None:
+                # Share the remaining budget across connect and read, and
+                # recompute it on every retry rather than restarting the clock.
+                request_timeout = Timeout(total=min(timeout, _remaining_time(deadline)))
+            response = self._session.get(url, timeout=request_timeout)
+            if deadline is not None:
+                try:
+                    _remaining_time(deadline)
+                except TimeoutError:
+                    response.close()
+                    raise
+            return response
+
+        return self._retry(request, deadline=deadline)
 
     def _put(self, url: str, data: bytes, timeout: float = 120) -> requests.Response:
         return self._retry(lambda: self._session.put(url, data=data, timeout=timeout))
@@ -523,9 +558,10 @@ class MetaServerClient:
 
     def get_binary(self, key: str, timeout: float = 0) -> bytes:
         """Get binary data from server"""
-        if timeout > 0:
-            self.wait_key(key, timeout)
-        response = self._get(f"{self._base_url}/v1/get_binary/{key}")
+        deadline = time.monotonic() + timeout if timeout > 0 else None
+        if deadline is not None:
+            self._wait_key(key, deadline)
+        response = self._get(f"{self._base_url}/v1/get_binary/{key}", deadline=deadline)
         if response.status_code == 404:
             raise ValueError(f"Key '{key}' not found")
         response.raise_for_status()
@@ -541,58 +577,53 @@ class MetaServerClient:
         self.get_object(key, 1024**3)
         self.delete(key)
 
-    def _has_key(self, key: str) -> bool:
+    def _has_key(self, key: str, deadline: float) -> bool:
         try:
-            return self.has_key(key)
+            return self.has_key(key, deadline=deadline)
         except requests.exceptions.ConnectTimeout:
             return False
         except requests.exceptions.ReadTimeout:
             return False
 
     def wait_key(self, key: str, timeout: float):
-        # Backoff strategy: start with 0.5s, max 3s, exponential backoff
+        self._wait_key(key, time.monotonic() + timeout)
+
+    def _wait_key(self, key: str, deadline: float):
         backoff_interval = 0.2
-        max_backoff = 1
-        backoff_multiplier = 1.5
-        start_time = time.time()
+        start_time = time.monotonic()
         last_print_time = 0
-        last_check_time = time.time()
-        while not self._has_key(key):
-            if time.time() - last_check_time > 3:
-                time.sleep(3)
-            if time.time() - start_time > 60:
-                backoff_interval = 3
-            time.sleep(backoff_interval)
-            last_check_time = time.time()
-            elapsed = time.time() - start_time
-            timeout -= backoff_interval
-
-            if timeout <= 0:
-                raise TimeoutError(f"Timeout waiting for key '{key}'")
-
-            # Increase backoff interval exponentially, capped at max_backoff
-            backoff_interval = min(backoff_interval * backoff_multiplier, max_backoff)
-
-            # Log every 3 seconds using last_print_time
-            if elapsed - last_print_time >= 3:
-                logger.info(
-                    f"Waiting for key '{key}' from meta server, waited {elapsed:.1f}s, "
-                    f"remaining wait time: {timeout:.1f}s, backoff: {backoff_interval:.1f}s"
-                )
-                last_print_time = elapsed
+        try:
+            while not self._has_key(key, deadline):
+                time.sleep(min(backoff_interval, _remaining_time(deadline)))
+                remaining = _remaining_time(deadline)
+                elapsed = time.monotonic() - start_time
+                backoff_interval = min(backoff_interval * 1.5, 3 if elapsed > 60 else 1)
+                if elapsed - last_print_time >= 3:
+                    logger.info(
+                        "Waiting for key %r, waited %.1fs, remaining %.1fs",
+                        key,
+                        elapsed,
+                        remaining,
+                    )
+                    last_print_time = elapsed
+        except TimeoutError as exc:
+            raise TimeoutError(f"Timeout waiting for key '{key}'") from exc
 
     def get_object(
         self, key: str, timeout: float = 0, default_value: Any = None
     ) -> Any:
         """Get object from server"""
-        if timeout > 0:
-            try:
-                self.wait_key(key, timeout)
-            except TimeoutError:
-                if default_value is not None:
-                    return default_value
-                raise
-        response = self._get(f"{self._base_url}/v1/get_binary/{key}")
+        deadline = time.monotonic() + timeout if timeout > 0 else None
+        try:
+            if deadline is not None:
+                self._wait_key(key, deadline)
+            response = self._get(
+                f"{self._base_url}/v1/get_binary/{key}", deadline=deadline
+            )
+        except TimeoutError:
+            if default_value is not None:
+                return default_value
+            raise
         if response.status_code == 404:
             return default_value
         response.raise_for_status()
@@ -635,7 +666,8 @@ class MetaServerClient:
         self, key: str, size: int, timeout: float, delete_after_wait: bool = False
     ):
         """Wait for set to reach a certain size"""
-        start_time = time.time()
+        start_time = time.monotonic()
+        deadline = start_time + timeout
         last_print_time = 0
         # Backoff strategy: start with 0.2s, max 3s, exponential backoff
         backoff_interval = 0.2
@@ -644,15 +676,15 @@ class MetaServerClient:
 
         while True:
             current_set = self.get_object(
-                key, timeout=backoff_interval, default_value=set()
+                key, timeout=_remaining_time(deadline), default_value=set()
             )
             if len(current_set) >= size:
                 break
-            if time.time() - start_time > 60:
+            if time.monotonic() - start_time > 60:
                 backoff_interval = 3
                 max_backoff = 3
-            time.sleep(backoff_interval)
-            elapsed = time.time() - start_time
+            time.sleep(min(backoff_interval, _remaining_time(deadline)))
+            elapsed = time.monotonic() - start_time
             remaining_timeout = max(0, timeout - elapsed)
             if remaining_timeout <= 0:
                 raise TimeoutError(
@@ -718,9 +750,9 @@ class MetaServerClient:
         response.raise_for_status()
         return response.json()
 
-    def has_key(self, key: str) -> bool:
+    def has_key(self, key: str, *, deadline: float | None = None) -> bool:
         """Check if a key exists on server"""
-        response = self._get(f"{self._base_url}/v1/has_key/{key}")
+        response = self._get(f"{self._base_url}/v1/has_key/{key}", deadline=deadline)
         response.raise_for_status()
         return response.json().get("has_key")
 

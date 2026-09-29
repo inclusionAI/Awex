@@ -20,7 +20,6 @@ from typing import Dict, List, Tuple
 import torch
 from transformers import PretrainedConfig
 
-from awex.converter.mcore_converter import LinearMLAMcoreConverterMixin
 from awex.converter.sglang_converter import (
     LinearMLASGlangConverterMixin,
     SGlangToHFWeightConverter,
@@ -40,6 +39,8 @@ class BailingLinearMoeShardingStrategy(
 
 
 def _build_mcore_converter_bailing_moe_linear():
+    from awex.converter.mcore_converter import LinearMLAMcoreConverterMixin
+
     BaseBailingMoeConverter = _build_mcore_converter_bailing_moe()
 
     class McoreToHFWeightConverterBailingMoeLinear(

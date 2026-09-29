@@ -42,7 +42,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        python-version: [3.8, 3.12]
+        python-version: ["3.10", "3.12"]
         os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v5
@@ -50,14 +50,40 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Install CPU test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e ".[dev]" transformers==4.57.1 megatron-core==0.16.1
+      - name: Run CPU contracts and converters
+        run: bash ci/test_cpu.sh
+
+  package:
+    name: Build and install wheel without training backends
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Build and validate package description
+        run: |
+          python -m pip install build twine
+          python -m build
+          python -m twine check --strict dist/*
+      - name: Verify isolated wheel imports
+        run: |
+          python -m venv /tmp/awex-wheel-check
+          /tmp/awex-wheel-check/bin/python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          /tmp/awex-wheel-check/bin/python -m pip install dist/*.whl transformers==4.57.1
+          cd /tmp
+          /tmp/awex-wheel-check/bin/python -I -c 'from awex import InferenceConfig, WeightsReader, NCCLWorkerWeightsReader, NCCLWeightsWriter; from awex.engine.sglang import SGLangEngine; from awex.engine.vllm import VLLMEngine'
 
   lint:
     name: Code Style Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-#      - name: Check License Header
-#        uses: korandoru/hawkeye@v3
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
@@ -67,4 +93,7 @@ jobs:
         with:
           node-version: 20.x
       - name: Check code style
-        run: bash ci/format.sh
+        run: |
+          python -m pip install ruff==0.15.20
+          npm install -g prettier@3.9.6
+          bash ci/format.sh --check

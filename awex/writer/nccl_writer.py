@@ -172,16 +172,14 @@ class NCCLWeightsWriter(WeightsExchangeShardingWriter):
 
     def _destroy_weights_exchange_process_group(self):
         # reduce the impact of process group to avoid oom in infer
-        if self.destroy_pg_after_update and self.backend == "hccl":
+        if self.destroy_pg_after_update and self.comm_backend == "hccl":
             self.already_initialized = False
             torch.distributed.destroy_process_group(self.weights_update_group)
             torch.npu.synchronize()
             torch.npu.empty_cache()
 
     def _init_writer_in_colocate_mode(self):
-        self.ipc_backend = self.asystem_train_config.get(
-            "weights_exchange_ipc_backend", "cuda"
-        )
+        self.ipc_backend = self.config.get("weights_exchange_ipc_backend", "cuda")
         # Don't get IPC tensors here since every step, the memory address for weights will change
         # because we use offloading for moving GPU tensors to CPU and back later
         ip_address = get_ip_address()

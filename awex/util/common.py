@@ -272,12 +272,33 @@ def pretty_bytes(size_bytes):
 
 
 def stripped_env_vars():
-    vars = {}
-    for k, v in os.environ.items():
-        if "secret" not in k.lower():
-            vars[k] = v
-    vars.pop("LS_COLORS", None)
-    return vars
+    """Return only known diagnostic settings; arbitrary env values may be credentials."""
+    names = (
+        "AWEX_DEVICE_TYPE",
+        "AWEX_MASTER_ADDR",
+        "AWEX_META_SERVER_ADDR",
+        "AWEX_CP_MODE",
+        "AWEX_USE_MINDSPEED",
+        "AWEX_DESTROY_PG_AFTER_UPDATE",
+        "AWEX_USE_BATCH_SEND_RECV",
+        "AWEX_MEM_DEBUG",
+        "AWEX_CHUNK_MB",
+        "AWEX_CHUNK_OPS",
+        "AWEX_EXPERT_PACK_MB",
+        "AWEX_EXPERT_PACK_OPS",
+        "AWEX_MOONCAKE_PROTOCOL",
+        "AWEX_MOONCAKE_HOST",
+        "AWEX_MOONCAKE_DEVICE",
+        "CUDA_VISIBLE_DEVICES",
+        "ASCEND_RT_VISIBLE_DEVICES",
+        "RANK",
+        "LOCAL_RANK",
+        "WORLD_SIZE",
+        "NCCL_DEBUG",
+        "NCCL_SOCKET_IFNAME",
+        "NCCL_IB_HCA",
+    )
+    return {name: os.environ[name] for name in names if name in os.environ}
 
 
 class AttrDict(dict):

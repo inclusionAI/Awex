@@ -68,6 +68,7 @@ def derive_expected_pp_ranks(
 class WeightExchangeReader(ABC):
     def __init__(self, inference_engine):
         self.inference_engine = inference_engine
+        inference_engine.config.validate()
         self.enable_colocate_mode = inference_engine.config.enable_colocate_mode
         self.infer_config = inference_engine.config
         self.weights_comm_nccl_group_size = (
@@ -126,13 +127,11 @@ class WeightsReader(WeightExchangeReader):
         self.engine_rank = self.inference_engine.engine_rank
         self.tp_size = config.tp_size
         self.pp_size = config.pp_size
-        # num_engines tracks external inference instances.
-        # For a single vLLM instance with internal DP, total inference ranks must
-        # still include dp_size.
+        # Runtime metadata includes vLLM's internal DP ranks, while SGLang DP
+        # Attention partitions the existing TP ranks. Use the same source as
+        # WorkerWeightsReader rather than multiplying config dimensions.
         self.dp_size = max(1, int(getattr(config, "dp_size", 1) or 1))
-        self.infer_world_size = (
-            self.num_engines * self.tp_size * self.pp_size * self.dp_size
-        )
+        self.infer_world_size = self.num_engines * meta_resolver.rank0_info.world_size
         self.validated_steps = 0
         self.start_step = -1
         self.weights_validation_steps = config.weights_validation_steps
