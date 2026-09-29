@@ -51,14 +51,17 @@ See more details in the [architecture documentation](https://github.com/inclusio
 
 For comprehensive introduction about awex, see the [medium article](https://medium.com/@shawn.ck.yang/awex-an-ultra-fast-weight-sync-framework-powering-trillion-scale-reinforcement-learning-766ebc79f58b)
 
-## Performance
+## Performance Benchmarks
 
-Weight-update latency depends on tensor layout, dtype, rank topology, network and
-transport. Measure conversion, staging, transfer and synchronization separately,
-and report both peak CPU/GPU memory and end-to-end update latency. Include the
-AWEX/framework revisions, model size and hardware with benchmark results.
-Historical RDMA measurements in the article above are not measurements of the
-current Mooncake TCP backend.
+On thousand-GPU scale clusters, Awex using NCCL transmission can **exchange 10B-scale model weights within one second**, and **exchange 1T-scale model weights within twenty seconds**. Using RDMA for transmission, **1T model weight exchange time** can be further **reduced to six seconds**.
+
+| Weight Parameter Scale | Weight Data Size | Verl Time | Awex NCCL Transmission Time | Awex RDMA Transmission Time |
+| ---------------------- | ---------------- | --------- | --------------------------- | --------------------------- |
+| 10B                    | 31GB             | 3.5S      | 0.8S                        | 0.5S                        |
+| 100B                   | 191GB            | 35S       | 9S                          | 3.2S                        |
+| 1000B                  | 1000GB (FP8)     | /         | 20S                         | 6S                          |
+
+The RDMA column reports the original RDMA backend's results. Mooncake TCP requires separate performance benchmarking.
 
 ## 📦 Installation
 
