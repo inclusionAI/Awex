@@ -60,7 +60,7 @@ After obtaining global weight metadata, Awex constructs a **deterministic point-
 Mooncake reuses this shard plan and checks the source/target slice signatures
 before copying received data into the inference weights.
 
-### (4) NCCL Weight Transmission
+### Transport Backend Selection
 
 The `comm_backend` configuration selects the transport:
 
@@ -76,6 +76,8 @@ Every non-file backend requires a shared `meta_server_addr`, even for one
 inference instance. All workers must use the same AWEX and per-framework version
 set. Rank counts come from runtime metadata: SGLang DP Attention partitions TP
 ranks, while vLLM internal DP adds ranks to the instance.
+
+### (4) NCCL Weight Transmission
 
 NCCL transmission mode primarily uses NCCL's send/recv interface for weight transmission. There are some implementation differences in Awex for separated and co-located modes, which we will detail here.
 
