@@ -40,9 +40,10 @@ class SGLangEngine(InferenceEngine):
         super().__init__(sgl_engine.tokenizer_manager.model_config)
         if isinstance(config, dict):
             config = InferenceConfig.from_dict(config)
+        config.validate()
         self._config = config
         self._sgl_engine = sgl_engine
-        self.node_rank = config.node_rank
+        self.node_rank = config.node_rank or 0
         self.released_tags = set()
         self.weights_exchange_reader = None
         self.rank_coordinate = f"{config.engine_rank}-{self.node_rank}"
@@ -57,7 +58,7 @@ class SGLangEngine(InferenceEngine):
         return self._config
 
     def initialize(self) -> None:
-        if self.config.node_rank == 0:
+        if self.node_rank == 0:
             logger.info(
                 f"Start to initialize weights exchange reader for {self.rank_coordinate}"
             )
@@ -75,7 +76,7 @@ class SGLangEngine(InferenceEngine):
     def update_weights_from_disk(self, model_path: str, load_format: str | None = None):
         """Update model weights for inference."""
         if not self._initialized:
-            raise RuntimeError("Engine not initialized. Call setup_model() first.")
+            raise RuntimeError("Engine not initialized. Call initialize() first.")
         logger.info(
             f"Start to update weights from disk for step {self.global_step} for "
             f"{self.rank_coordinate}, path: {model_path}, load_format: {load_format}"

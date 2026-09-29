@@ -152,9 +152,7 @@ class Qwen3VLSGlangToHFWeightConverter(SGlangToHFWeightConverterQwen3Moe):
         return converted
 
 
-_VISION_LAYER_PATTERN = re.compile(
-    r"vision_model\.decoder\.layers\.(\d+)\.(.+)"
-)
+_VISION_LAYER_PATTERN = re.compile(r"vision_model\.decoder\.layers\.(\d+)\.(.+)")
 _VISION_DEEPSTACK_PATTERN = re.compile(
     r"vision_model\.decoder\.deepstack_merger_list\.(\d+)\.(.+)"
 )
@@ -295,9 +293,7 @@ def _build_mcore_converter_qwen3_vl():
                 language_name, parameter, vp_stage=vp_stage
             ):
                 if hf_name.startswith("model."):
-                    hf_name = hf_name.replace(
-                        "model.", "model.language_model.", 1
-                    )
+                    hf_name = hf_name.replace("model.", "model.language_model.", 1)
                 converted.append((hf_name, hf_param))
 
             if (

@@ -26,7 +26,6 @@ import torch
 import torch.distributed as dist
 
 from awex import logging
-from awex.converter.mcore_converter import get_mcore_model_parameters
 from awex.meta.meta_resolver import (
     ParameterMeta,
 )
@@ -235,6 +234,8 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
 
     @torch.no_grad()
     def convert_parameters(self, required_names=None):
+        from awex.converter.mcore_converter import get_mcore_model_parameters
+
         # for megatron vpp, model is a list of modules
         parameters = []
         for vp_stage, model in enumerate(self.model):
@@ -372,6 +373,8 @@ class WeightsExchangeShardingWriter(WeightExchangeWriter):
         logger.info("Finished releasing weights memory occupation")
 
     def _write_weights(self, step_id, **kwargs):
+        from awex.converter.mcore_converter import get_mcore_model_parameters
+
         logger.info(f"Writing weights for step {step_id}")
         logger.info(f"GPU status before write weights:\n{get_gpu_status()}")
         for vp_stage, model in enumerate(self.model):

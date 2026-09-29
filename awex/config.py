@@ -173,15 +173,10 @@ class InferenceConfig:
         if self.enable_eplb and self.ep_size is None:
             errors.append("enable_eplb requires ep_size to be set")
 
-        # non-file comm_backend requires meta_server_addr for multi-engine setups
-        if (
-            self.num_engines > 1
-            and self.comm_backend != "file"
-            and not self.meta_server_addr
-        ):
+        # Even one inference engine exchanges metadata with the training workers.
+        if self.comm_backend != "file" and not self.meta_server_addr:
             errors.append(
-                f"meta_server_addr must be set when num_engines > 1 "
-                f"and comm_backend is {self.comm_backend!r}"
+                f"meta_server_addr must be set when comm_backend is {self.comm_backend!r}"
             )
 
         if errors:
@@ -229,4 +224,4 @@ class InferenceConfig:
             if value is not None:
                 config[k] = value
         config.update(**extra_config)
-        return InferenceConfig(**config)
+        return InferenceConfig(**config).validated()

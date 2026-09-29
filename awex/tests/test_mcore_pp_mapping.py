@@ -226,7 +226,7 @@ def test_writer_convert_parameters_passes_vp_stage(monkeypatch):
     writer.rank_info = SimpleNamespace(pp_rank=0, pp_size=1)
 
     monkeypatch.setattr(
-        "awex.writer.weights_writer.get_mcore_model_parameters",
+        "awex.converter.mcore_converter.get_mcore_model_parameters",
         lambda model: model.state_dict(),
     )
 

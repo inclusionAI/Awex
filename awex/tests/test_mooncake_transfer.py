@@ -266,7 +266,9 @@ def test_empty_plan_colocate_offload_callback(transport):
 
 def test_config_accepts_mooncake():
     assert (
-        InferenceConfig.from_dict({"comm_backend": "mooncake"}).comm_backend
+        InferenceConfig.from_dict(
+            {"comm_backend": "mooncake", "meta_server_addr": "127.0.0.1:12345"}
+        ).comm_backend
         == "mooncake"
     )
 

@@ -1,6 +1,7 @@
 import pickle
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from awex.config import InferenceConfig
@@ -39,7 +40,9 @@ class _DummyMetaServerClient:
 
 class _DummyMetaResolver:
     def __init__(self, params_meta):
-        self.rank0_info = SimpleNamespace(attn_tp_size=1)
+        self.rank0_info = SimpleNamespace(
+            attn_tp_size=1, world_size=params_meta[0].shards[0].world_size
+        )
         self._params_meta = params_meta
 
     def get_parameters_meta(self):
@@ -93,8 +96,15 @@ def _build_param_meta():
     )
 
 
-def test_weights_reader_infer_conf_carries_engine_name(monkeypatch):
+@pytest.mark.parametrize(
+    "engine_name,dp_attention,world_size,num_engines",
+    [("sglang", True, 8, 1), ("sglang", True, 8, 2), ("vllm", False, 16, 1)],
+)
+def test_weights_reader_infer_conf_carries_runtime_ranks(
+    monkeypatch, engine_name, dp_attention, world_size, num_engines
+):
     params_meta = [_build_param_meta()]
+    params_meta[0].shards[0].world_size = world_size
     meta_server = _DummyMetaServerClient()
     meta_server.objects["training_params_meta"] = params_meta
 
@@ -109,20 +119,27 @@ def test_weights_reader_infer_conf_carries_engine_name(monkeypatch):
 
     infer_config = InferenceConfig(
         meta_server_addr="127.0.0.1:12345",
-        tp_size=1,
+        tp_size=8,
         pp_size=1,
-        dp_size=1,
-        num_engines=1,
+        dp_size=2,
+        num_engines=num_engines,
+        enable_dp_attention=dp_attention,
         engine_rank=0,
         comm_backend="nccl",
         enable_debug_mode=True,
     )
     engine = _DummyInferenceEngine(infer_config)
+    engine.engine_name = engine_name
     reader = WeightsReader(engine, meta_resolver=_DummyMetaResolver(params_meta))
 
     reader._initialize()
 
-    assert meta_server.objects["infer_conf"]["engine_name"] == "vllm"
+    assert meta_server.objects["infer_conf"]["engine_name"] == engine_name
+    assert (
+        meta_server.objects["infer_conf"]["infer_world_size"]
+        == world_size * num_engines
+    )
     assert engine.received_task_kwargs is not None
     init_infer_conf = pickle.loads(engine.received_task_kwargs["infer_conf_bytes"])
-    assert init_infer_conf["engine_name"] == "vllm"
+    assert init_infer_conf["engine_name"] == engine_name
+    assert init_infer_conf["infer_world_size"] == world_size * num_engines

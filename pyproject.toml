@@ -22,8 +22,6 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -32,13 +30,29 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: System :: Distributed Computing",
 ]
-requires-python = ">=3.8"
-dependencies = ["cloudpickle>=2.2"]
+requires-python = ">=3.10"
+dependencies = [
+    "aiohttp>=3.9",
+    "cloudpickle>=2.2",
+    "packaging>=21",
+    "psutil>=5.9",
+    "requests>=2.28",
+    "torch>=2.0",
+    "transformers>=4.51,<6",
+    "urllib3>=1.26",
+]
 
 [project.optional-dependencies]
 mooncake = ["mooncake-transfer-engine"]
+mcore = ["megatron-core>=0.16"]
 dev = [
     "modelscope>=1.9.0",  # For faster download models
+    "pytest>=7",
+    "pytest-timeout>=2",
+    "pyzmq>=25",  # SGLang hook CPU tests use real ZeroMQ sockets
+    "ruff==0.15.20",
+    "build>=1",
+    "twine>=5",
 ]
 
 [project.urls]
@@ -69,7 +83,7 @@ addopts = "-v -s"
 
 [tool.ruff]
 line-length = 88
-target-version = "py38"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = [
@@ -82,6 +96,9 @@ select = [
     "UP", # pyupgrade
 ]
 ignore = [
+    # Keep existing annotations, cache decorators and zip semantics when raising
+    # the Python floor; avoid unrelated repository-wide style migrations.
+    "UP006", "UP007", "UP033", "UP035", "UP045", "B905",
     "E501",  # line too long, handled by formatter
     "B008",  # do not perform function calls in argument defaults
     "C901",  # too complex

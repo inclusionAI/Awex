@@ -16,9 +16,6 @@
 # under the License.
 
 from awex.config import InferenceConfig as InferenceConfig
-from awex.reader.nccl_reader import NCCLWorkerWeightsReader as NCCLWorkerWeightsReader
-from awex.reader.weights_reader import WeightsReader as WeightsReader
-from awex.writer.nccl_writer import NCCLWeightsWriter as NCCLWeightsWriter
 
 __all__ = [
     "InferenceConfig",
@@ -26,3 +23,19 @@ __all__ = [
     "WeightsReader",
     "NCCLWorkerWeightsReader",
 ]
+
+
+def __getattr__(name):
+    # Config-only callers and packaging tools do not need runtime backends.
+    from importlib import import_module
+
+    modules = {
+        "NCCLWeightsWriter": "awex.writer.nccl_writer",
+        "WeightsReader": "awex.reader.weights_reader",
+        "NCCLWorkerWeightsReader": "awex.reader.nccl_reader",
+    }
+    if name not in modules:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(modules[name]), name)
+    globals()[name] = value
+    return value
