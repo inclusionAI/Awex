@@ -74,6 +74,7 @@ jobs:
       - name: Verify isolated wheel imports
         run: |
           python -m venv /tmp/awex-wheel-check
+          /tmp/awex-wheel-check/bin/python -m pip install --upgrade pip
           /tmp/awex-wheel-check/bin/python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
           /tmp/awex-wheel-check/bin/python -m pip install dist/*.whl transformers==4.57.1
           cd /tmp

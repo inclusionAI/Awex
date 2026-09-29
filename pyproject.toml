@@ -49,6 +49,7 @@ dev = [
     "modelscope>=1.9.0",  # For faster download models
     "pytest>=7",
     "pytest-timeout>=2",
+    "pyzmq>=25",  # SGLang hook CPU tests use real ZeroMQ sockets
     "ruff==0.15.20",
     "build>=1",
     "twine>=5",
