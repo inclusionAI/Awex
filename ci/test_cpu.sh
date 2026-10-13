@@ -5,6 +5,8 @@ set -euo pipefail
 export AWEX_DEVICE_TYPE=cpu
 python -m pytest --timeout=120 \
   awex/tests/test_imports.py \
+  awex/tests/test_tensor_utils.py \
+  awex/tests/test_cuda_ipc.py \
   awex/tests/test_runtime_contracts.py \
   awex/tests/test_weights_reader_init.py \
   awex/tests/test_meta_server.py \

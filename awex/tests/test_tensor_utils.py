@@ -23,6 +23,7 @@ import torch
 from awex.util.tensor_util import (
     group_tensors_by_shape_and_dtype,
     reconstruct_tensors_from_groups,
+    release_tensors,
 )
 
 mp.set_start_method("spawn", force=True)
@@ -154,7 +155,52 @@ class TestGroupTensorsByShapeAndDtype:
         # Check that each group size is within limit
         for group in result_groups:
             group_size = group.element_size() * group.numel()
-            assert group_size <= max_size * 2
+            assert group_size <= max_size
+
+    @pytest.mark.parametrize(
+        ("sizes", "expected_bytes"),
+        [([4, 2], [16, 8]), ([2, 7, 1], [8, 28, 4]), ([3, 2, 1], [20, 4])],
+    )
+    def test_size_bound_and_oversized_tensor_isolation(self, sizes, expected_bytes):
+        tensors = [torch.arange(size, dtype=torch.float32) for size in sizes]
+        groups, metadata = group_tensors_by_shape_and_dtype(tensors, max_tensor_size=20)
+        assert [group.nbytes for group in groups] == expected_bytes
+        for original, rebuilt in zip(
+            tensors, reconstruct_tensors_from_groups(groups, metadata), strict=True
+        ):
+            torch.testing.assert_close(rebuilt, original, rtol=0, atol=0)
+
+    @pytest.mark.parametrize("num_tensors", [1, 3])
+    @pytest.mark.parametrize("noncontiguous", [False, True])
+    def test_packed_storage_survives_source_release(self, num_tensors, noncontiguous):
+        tensors = [
+            torch.arange(12, dtype=torch.float32).reshape(3, 4)
+            for _ in range(num_tensors)
+        ]
+        if noncontiguous:
+            tensors = [tensor.t() for tensor in tensors]
+        expected = [tensor.clone() for tensor in tensors]
+        groups, metadata = group_tensors_by_shape_and_dtype(tensors)
+        release_tensors(tensors)
+        for original, rebuilt in zip(
+            expected, reconstruct_tensors_from_groups(groups, metadata), strict=True
+        ):
+            torch.testing.assert_close(rebuilt, original, rtol=0, atol=0)
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+    def test_cuda_packing_peak_allocates_only_output_storage(self):
+        tensors = [torch.ones(1024 * 1024, device="cuda") for _ in range(2)]
+        torch.cuda.synchronize()
+        baseline = torch.cuda.memory_allocated()
+        torch.cuda.reset_peak_memory_stats()
+        groups, metadata = group_tensors_by_shape_and_dtype(tensors)
+        torch.cuda.synchronize()
+        output_bytes = sum(group.nbytes for group in groups)
+        assert torch.cuda.max_memory_allocated() - baseline == output_bytes
+        for original, rebuilt in zip(
+            tensors, reconstruct_tensors_from_groups(groups, metadata), strict=True
+        ):
+            torch.testing.assert_close(rebuilt, original, rtol=0, atol=0)
 
     def test_complex_tensor_shapes(self):
         """Test function with complex tensor shapes."""

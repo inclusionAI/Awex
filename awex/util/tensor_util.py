@@ -187,7 +187,7 @@ def group_tensors_by_shape_and_dtype(
     tensors: list[torch.Tensor], max_tensor_size: int = 5 * 1024 * 1024 * 1024, **kwargs
 ) -> tuple[list[torch.Tensor], list[dict]]:
     """
-    Group tensors by shape and dtype, ensuring each group's total size is less than max_tensor_size.
+    Group tensors by dtype with at most max_tensor_size bytes per group.
     If one tensor is too large, it will be put into a separate group.
 
     Args:
@@ -196,7 +196,7 @@ def group_tensors_by_shape_and_dtype(
 
     Returns:
         Tuple containing:
-        - List of tensor groups, where each group is a list of tensors with same shape and dtype
+        - List of flattened tensor groups with the same dtype
         - List of metadata dictionaries for reconstructing original tensors
 
     Raises:
@@ -236,53 +236,16 @@ def group_tensors_by_shape_and_dtype(
         current_group_indices = []
         current_group_size = 0
 
-        for orig_idx, tensor in group_tensors:
-            tensor_size = tensor.element_size() * tensor.numel()
-            current_group.append(tensor)
-            current_group_indices.append(orig_idx)
-            current_group_size += tensor_size
-            # Check if this tensor can fit in current group
-            if current_group_size > max_tensor_size:
-                # Finalize current group and start new one
-                # Use clone() to ensure a copy so caller can safely release original tensors
-                concatenated = torch.cat(
-                    [t.reshape(-1) for t in current_group], dim=0
-                ).clone()
-                final_tensor_groups.append(concatenated)
-                # Record metadata for tensors in this group
-                offset_elements = 0
-                for i, group_tensor in enumerate(current_group):
-                    group_tensor_elements = group_tensor.numel()
-                    metadata.append(
-                        {
-                            "original_index": current_group_indices[i],
-                            "shape": group_tensor.shape,
-                            "dtype": group_tensor.dtype,
-                            "group_index": len(final_tensor_groups) - 1,
-                            "offset": offset_elements,
-                            "size": group_tensor_elements,
-                        }
-                    )
-                    offset_elements += group_tensor_elements
-                # Start new group
-                current_group = []
-                current_group_indices = []
-                current_group_size = 0
-
-        # Finalize any remaining group
-        if current_group:
-            # Use clone() to ensure a copy so caller can safely release original tensors
-            concatenated = torch.cat(
-                [t.reshape(-1) for t in current_group], dim=0
-            ).clone()
+        def finalize_group(group: list[torch.Tensor], indices: list[int]) -> None:
+            # cat already owns independent storage, even with one input.
+            concatenated = torch.cat([t.reshape(-1) for t in group], dim=0)
             final_tensor_groups.append(concatenated)
-            # Record metadata for tensors in this group
             offset_elements = 0
-            for i, group_tensor in enumerate(current_group):
+            for original_index, group_tensor in zip(indices, group, strict=True):
                 group_tensor_elements = group_tensor.numel()
                 metadata.append(
                     {
-                        "original_index": current_group_indices[i],
+                        "original_index": original_index,
                         "shape": group_tensor.shape,
                         "dtype": group_tensor.dtype,
                         "group_index": len(final_tensor_groups) - 1,
@@ -291,6 +254,22 @@ def group_tensors_by_shape_and_dtype(
                     }
                 )
                 offset_elements += group_tensor_elements
+
+        for orig_idx, tensor in group_tensors:
+            tensor_size = tensor.element_size() * tensor.numel()
+            # Split before insertion. An individually oversized tensor forms
+            # its own group, rather than joining a preceding partial group.
+            if current_group and current_group_size + tensor_size > max_tensor_size:
+                finalize_group(current_group, current_group_indices)
+                current_group = []
+                current_group_indices = []
+                current_group_size = 0
+            current_group.append(tensor)
+            current_group_indices.append(orig_idx)
+            current_group_size += tensor_size
+
+        if current_group:
+            finalize_group(current_group, current_group_indices)
     logger.info(
         f"Grouped tensors, num groups: {len(final_tensor_groups)}, num tensors: {len(metadata)}"
     )
